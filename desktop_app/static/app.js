@@ -35,6 +35,7 @@ const themeModeStorageKey = "metabolic_safety_theme_mode_v1";
 const remoteApiBaseStorageKey = "metabolic_safety_remote_api_base_v1";
 const remoteFallbackStorageKey = "metabolic_safety_remote_fallback_v1";
 const remoteSubstanceCacheStorageKey = "metabolic_safety_remote_substances_v1";
+const defaultRemoteApiBaseUrl = "https://miaocchi.github.io/metabolic-safety-api/api";
 const ethanolDensityGPerMl = 0.789;
 const $ = (id) => document.getElementById(id);
 
@@ -255,7 +256,7 @@ function setRemoteApiStatus(message, kind = "") {
 function loadRemoteConfig() {
   state.remoteConfig = {
     enabled: localStorage.getItem(remoteFallbackStorageKey) === "1",
-    baseUrl: normalizeRemoteBaseUrl(localStorage.getItem(remoteApiBaseStorageKey) || ""),
+    baseUrl: normalizeRemoteBaseUrl(localStorage.getItem(remoteApiBaseStorageKey) || defaultRemoteApiBaseUrl),
   };
   try {
     const cached = JSON.parse(localStorage.getItem(remoteSubstanceCacheStorageKey) || "[]");
