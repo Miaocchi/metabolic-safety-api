@@ -44,25 +44,10 @@ jobs:
             --public-workers 8 \
             --psychonautwiki-pages 3
 
-      - name: Write static site metadata
+      - name: Copy search web UI
         shell: bash
         run: |
-          cat > public/index.html <<'HTML'
-          <!doctype html>
-          <html lang="en">
-          <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Metabolic Safety Static API</title></head>
-          <body style="font-family:system-ui,sans-serif;max-width:820px;margin:40px auto;line-height:1.55;padding:0 18px">
-            <h1>Metabolic Safety Static API</h1>
-            <p>This is a Cloudflare Pages hosted static JSON API. The client reads <code>/api/search/index.json</code> and filters locally.</p>
-            <ul>
-              <li><a href="api/manifest.json">api/manifest.json</a></li>
-              <li><a href="api/search/index.json">api/search/index.json</a></li>
-              <li><a href="api/sources/index.json">api/sources/index.json</a></li>
-              <li><a href="api/packages/full/manifest.json">api/packages/full/manifest.json</a></li>
-            </ul>
-          </body>
-          </html>
-          HTML
+          cp -R site/. public/
           cat > public/_headers <<'HEADERS'
           /api/*
             Access-Control-Allow-Origin: *
