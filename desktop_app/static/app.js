@@ -458,9 +458,13 @@ async function testRemoteApiConnection() {
     return;
   }
   try {
-    const manifest = await ensureRemoteManifest();
-    const counts = manifest?.counts || {};
-    setRemoteApiStatus(`\u8fde\u63a5\u6210\u529f\uff1a${manifest.api_version || "static API"} \u00b7 ${counts.substances || 0} \u4e2a\u7269\u8d28 \u00b7 ${counts.interactions || 0} \u6761\u76f8\u4e92\u4f5c\u7528`, "ok");
+    const manifest = await fetchRemoteJson("manifest.json", { cache: "no-cache" });
+    if (!manifest || typeof manifest !== "object") throw new Error("\u8fdc\u7a0b\u6e90 manifest.json \u683c\u5f0f\u4e0d\u6b63\u786e\u3002");
+    state.remoteManifest = manifest;
+    const counts = manifest.counts || {};
+    const version = manifest.api_version || "static API";
+    const enabledNote = state.remoteConfig.enabled ? "\u5df2\u542f\u7528" : "\u672a\u542f\u7528\uff0c\u4ec5\u5b8c\u6210\u8fde\u63a5\u6d4b\u8bd5";
+    setRemoteApiStatus(`\u8fde\u63a5\u6210\u529f\uff1a${version} \u00b7 ${counts.substances || 0} \u4e2a\u7269\u8d28 \u00b7 ${counts.interactions || 0} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${enabledNote}`, "ok");
   } catch (error) {
     setRemoteApiStatus(error.message || String(error), "error");
   }
