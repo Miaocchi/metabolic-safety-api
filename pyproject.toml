@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "metabolic-safety-etl"
 version = "0.1.0"
 description = "Local-first drug PK/PD/DDI/DFI evidence fusion prototype for mobile seed generation"
