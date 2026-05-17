@@ -1,0 +1,495 @@
+[
+  {
+    "fact_id": "dose_rule_acetaminophen_adult_daily_fda",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "acetaminophen"
+    ],
+    "claim": {
+      "rule_id": "acetaminophen_adult_daily_fda",
+      "match_terms": [
+        "acetaminophen",
+        "paracetamol",
+        "\u5bf9\u4e59\u9170\u6c28\u57fa\u915a",
+        "\u6251\u70ed\u606f\u75db"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "single",
+          "level": "Moderate",
+          "limit": 1000,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7 1000 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 4000,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 4000 mg"
+        }
+      ],
+      "note": "Adult ceiling seed rule; use lower limits for liver disease, heavy alcohol use, or clinician-specific instructions."
+    },
+    "confidence": "High",
+    "source_tier": "Regulatory",
+    "source_name": "FDA acetaminophen label guidance",
+    "source_url": "https://www.fda.gov/drugs/information-drug-class/acetaminophen",
+    "evidence_quote": "FDA acetaminophen safety guidance used as adult daily ceiling seed rule.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_caffeine_adult_daily_fda",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "caffeine"
+    ],
+    "claim": {
+      "rule_id": "caffeine_adult_daily_fda",
+      "match_terms": [
+        "caffeine",
+        "\u5496\u5561\u56e0"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "single",
+          "level": "Moderate",
+          "limit": 400,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7 400 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 400,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 400 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 800,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 800 mg"
+        }
+      ],
+      "note": "Adult caffeine ceiling seed rule; anxiety, arrhythmia, pregnancy, and CYP1A2 inhibitors require more conservative handling."
+    },
+    "confidence": "Medium",
+    "source_tier": "Regulatory",
+    "source_name": "FDA caffeine consumer guidance",
+    "source_url": "https://www.fda.gov/consumers/consumer-updates/spilling-beans-how-much-caffeine-too-much",
+    "evidence_quote": "FDA consumer caffeine guidance used as adult daily ceiling seed rule.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_ethanol_standard_drinks_cdc",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "ethanol"
+    ],
+    "claim": {
+      "rule_id": "ethanol_standard_drinks_cdc",
+      "match_terms": [
+        "ethanol",
+        "alcohol",
+        "\u4e59\u9187",
+        "\u9152\u7cbe"
+      ],
+      "unit": "g",
+      "route": "Oral",
+      "window_hours": 6,
+      "thresholds": [
+        {
+          "kind": "window",
+          "level": "Minor",
+          "limit": 28,
+          "label": "\u7ea6 2 \u4e2a\u6807\u51c6\u676f"
+        },
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 56,
+          "label": "\u7ea6 4 \u4e2a\u6807\u51c6\u676f"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 112,
+          "label": "\u7ea6 8 \u4e2a\u6807\u51c6\u676f"
+        },
+        {
+          "kind": "window",
+          "level": "Contraindicated",
+          "limit": 168,
+          "label": "\u7ea6 12 \u4e2a\u6807\u51c6\u676f"
+        }
+      ],
+      "note": "Uses 14 g pure ethanol per standard drink; CNS depressant and hepatotoxic combinations are handled by interaction rules."
+    },
+    "confidence": "Medium",
+    "source_tier": "Guideline",
+    "source_name": "CDC/NIAAA standard drink reference",
+    "source_url": "https://www.cdc.gov/alcohol/standard-drink-sizes/index.html",
+    "evidence_quote": "Standard drink reference used for ethanol amount normalization.",
+    "extraction_method": "curated_guideline_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_ibuprofen_adult_daily_label",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "ibuprofen"
+    ],
+    "claim": {
+      "rule_id": "ibuprofen_adult_daily_label",
+      "match_terms": [
+        "ibuprofen",
+        "\u5e03\u6d1b\u82ac"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 1200,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u5e38\u89c1 OTC \u4e0a\u9650 1200 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 3200,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u5e38\u89c1\u5904\u65b9\u4e0a\u9650 3200 mg"
+        }
+      ],
+      "note": "Adult OTC/Rx seed ceiling rule; renal disease, GI bleeding risk, and anticoagulants require more conservative handling."
+    },
+    "confidence": "Medium",
+    "source_tier": "Label",
+    "source_name": "Ibuprofen OTC/Rx label dose ceiling seed",
+    "source_url": "https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=ibuprofen",
+    "evidence_quote": "Ibuprofen common adult OTC and prescription daily ceilings used as seed rule.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_lorazepam_adult_daily_dailymed",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "lorazepam"
+    ],
+    "claim": {
+      "rule_id": "lorazepam_adult_daily_dailymed",
+      "match_terms": [
+        "lorazepam",
+        "ativan",
+        "\u52b3\u62c9\u897f\u6cee"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "single",
+          "level": "Moderate",
+          "limit": 4,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7\u5e38\u89c1\u7761\u524d\u5355\u5242 4 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 10,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 10 mg"
+        },
+        {
+          "kind": "single",
+          "level": "Contraindicated",
+          "limit": 20,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 2 \u500d"
+        },
+        {
+          "kind": "window",
+          "level": "Contraindicated",
+          "limit": 20,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 2 \u500d"
+        }
+      ],
+      "note": "Adult oral label seed rule; alcohol or other CNS depressants should additionally upgrade risk through interaction rules."
+    },
+    "confidence": "High",
+    "source_tier": "Regulatory",
+    "source_name": "DailyMed lorazepam oral tablet label",
+    "source_url": "https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=lorazepam",
+    "evidence_quote": "DailyMed lorazepam oral tablet label dosage range used as seed ceiling rule.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_methylphenidate_adult_daily_dailymed",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "methylphenidate"
+    ],
+    "claim": {
+      "rule_id": "methylphenidate_adult_daily_dailymed",
+      "match_terms": [
+        "methylphenidate",
+        "ritalin",
+        "\u54cc\u7532\u916f"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 60,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u5e38\u89c1\u5373\u91ca\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 60 mg"
+        },
+        {
+          "kind": "single",
+          "level": "Major",
+          "limit": 60,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7\u5e38\u89c1\u5373\u91ca\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 60 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 120,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 120 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Contraindicated",
+          "limit": 180,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 180 mg"
+        }
+      ],
+      "note": "DailyMed immediate-release methylphenidate tablet labels list a maximum total daily dosage of 60 mg; extended-release products can differ and need product-specific rules."
+    },
+    "confidence": "High",
+    "source_tier": "Regulatory",
+    "source_name": "DailyMed methylphenidate hydrochloride tablet label",
+    "source_url": "https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=methylphenidate",
+    "evidence_quote": "DailyMed methylphenidate IR tablet label: maximum total daily dosage is 60 mg.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_sertraline_adult_daily_dailymed",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "sertraline"
+    ],
+    "claim": {
+      "rule_id": "sertraline_adult_daily_dailymed",
+      "match_terms": [
+        "sertraline",
+        "zoloft",
+        "\u820d\u66f2\u6797"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 200,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 200 mg"
+        },
+        {
+          "kind": "single",
+          "level": "Major",
+          "limit": 400,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 2 \u500d"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 400,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 2 \u500d"
+        },
+        {
+          "kind": "window",
+          "level": "Contraindicated",
+          "limit": 800,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 4 \u500d"
+        }
+      ],
+      "note": "DailyMed sertraline labels describe titration up to a maximum of 200 mg/day. Serotonergic combinations require interaction-rule escalation."
+    },
+    "confidence": "High",
+    "source_tier": "Regulatory",
+    "source_name": "DailyMed sertraline oral tablet label",
+    "source_url": "https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=sertraline",
+    "evidence_quote": "DailyMed sertraline label: maximum of 200 mg per day.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_tandospirone_adult_daily_seed",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "tandospirone"
+    ],
+    "claim": {
+      "rule_id": "tandospirone_adult_daily_seed",
+      "match_terms": [
+        "tandospirone",
+        "tandospirone citrate",
+        "sediel",
+        "\u5766\u5ea6\u87ba\u916e",
+        "\u67b8\u6a7c\u9178\u5766\u5ea6\u87ba\u916e"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 60,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u5e38\u89c1\u6700\u9ad8\u65e5\u5242\u91cf 60 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 120,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 120 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Contraindicated",
+          "limit": 240,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 240 mg"
+        }
+      ],
+      "note": "Kusuri-no-Shiori patient sheet and clinical dose ranges describe titration up to 60 mg/day; this is a seed rule until local label extraction is expanded."
+    },
+    "confidence": "Medium",
+    "source_tier": "Label",
+    "source_name": "Kusuri-no-Shiori tandospirone citrate sheet",
+    "source_url": "https://www.rad-ar.or.jp/siori/english/search/result?n=34294",
+    "evidence_quote": "Kusuri-no-Shiori tandospirone citrate sheet: dosage may be increased up to 60 mg/day.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_tea_polyphenols_egcg_efsa",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "tea_polyphenols"
+    ],
+    "claim": {
+      "rule_id": "tea_polyphenols_egcg_efsa",
+      "match_terms": [
+        "tea_polyphenols",
+        "tea polyphenols",
+        "egcg",
+        "green tea extract",
+        "\u8336\u591a\u915a",
+        "\u513f\u8336\u7d20"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 400,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 400 mg EGCG \u7b49\u6548\u4f30\u7b97"
+        },
+        {
+          "kind": "window",
+          "level": "Major",
+          "limit": 800,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 EFSA \u5173\u6ce8\u9608\u503c 800 mg EGCG"
+        },
+        {
+          "kind": "window",
+          "level": "Contraindicated",
+          "limit": 1600,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7 1600 mg EGCG \u7b49\u6548\u4f30\u7b97"
+        }
+      ],
+      "note": "Treat entered mg as EGCG-equivalent only if the supplement label reports EGCG/catechin mass; brewed tea and mixed extracts are not directly comparable."
+    },
+    "confidence": "Medium",
+    "source_tier": "Guideline",
+    "source_name": "EFSA green tea catechins safety opinion",
+    "source_url": "https://www.efsa.europa.eu/en/efsajournal/pub/5239",
+    "evidence_quote": "EFSA concluded that green tea catechin supplement doses at or above 800 mg EGCG/day may raise liver enzyme safety concerns.",
+    "extraction_method": "curated_guideline_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  },
+  {
+    "fact_id": "dose_rule_zolpidem_adult_daily_dailymed",
+    "fact_type": "dose_rule",
+    "subject_ids": [
+      "zolpidem"
+    ],
+    "claim": {
+      "rule_id": "zolpidem_adult_daily_dailymed",
+      "match_terms": [
+        "zolpidem",
+        "ambien",
+        "\u5511\u5421\u5766"
+      ],
+      "unit": "mg",
+      "route": "Oral",
+      "window_hours": 24,
+      "thresholds": [
+        {
+          "kind": "single",
+          "level": "Moderate",
+          "limit": 10,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u5355\u6b21\u5242\u91cf 10 mg"
+        },
+        {
+          "kind": "window",
+          "level": "Moderate",
+          "limit": 10,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 10 mg"
+        },
+        {
+          "kind": "single",
+          "level": "Major",
+          "limit": 20,
+          "label": "\u5355\u6b21\u5242\u91cf\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 2 \u500d"
+        },
+        {
+          "kind": "window",
+          "level": "Contraindicated",
+          "limit": 30,
+          "label": "24 \u5c0f\u65f6\u7d2f\u8ba1\u8fbe\u5230/\u8d85\u8fc7\u6807\u7b7e\u6700\u9ad8\u65e5\u5242\u91cf 3 \u500d"
+        }
+      ],
+      "note": "DailyMed zolpidem labels state immediate-release zolpidem should not exceed 10 mg daily; CNS depressants and alcohol require stricter handling."
+    },
+    "confidence": "High",
+    "source_tier": "Regulatory",
+    "source_name": "DailyMed zolpidem tartrate oral tablet label",
+    "source_url": "https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=zolpidem",
+    "evidence_quote": "DailyMed zolpidem label: must not exceed a total of 10 mg daily.",
+    "extraction_method": "curated_label_seed",
+    "review_status": "machine_checked",
+    "use_policy": "safety_rule_seed"
+  }
+]

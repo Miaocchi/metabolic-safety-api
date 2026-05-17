@@ -1,0 +1,190 @@
+﻿[
+  {
+    "fact_type": "substance_identity",
+    "subject_ids": ["ibuprofen"],
+    "claim": {
+      "name_zh": "布洛芬",
+      "name_en": "Ibuprofen",
+      "category": "NSAID",
+      "solubility": "Lipophilic",
+      "identifiers": {
+        "rxnorm_hint": "ibuprofen"
+      }
+    },
+    "risk_level": "Unknown",
+    "confidence": "Medium",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Replace with DailyMed/openFDA/RxNorm evidence before production use.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "pharmacokinetics",
+    "subject_ids": ["ibuprofen"],
+    "claim": {
+      "half_life_hours": 2.0,
+      "onset_minutes": 30,
+      "duration_minutes": 360,
+      "route": "oral"
+    },
+    "risk_level": "Unknown",
+    "confidence": "Low",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Validate against label or curated PK source before production use.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "substance_identity",
+    "subject_ids": ["warfarin"],
+    "claim": {
+      "name_zh": "华法林",
+      "name_en": "Warfarin",
+      "category": "Anticoagulant",
+      "identifiers": {
+        "rxnorm_hint": "warfarin"
+      }
+    },
+    "risk_level": "Unknown",
+    "confidence": "Medium",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Replace with DailyMed/openFDA/RxNorm evidence before production use.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "substance_identity",
+    "subject_ids": ["grapefruit_juice"],
+    "claim": {
+      "name_zh": "西柚汁",
+      "name_en": "Grapefruit juice",
+      "category": "Food",
+      "identifiers": {
+        "food_hint": "grapefruit juice"
+      }
+    },
+    "risk_level": "Unknown",
+    "confidence": "Medium",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Replace with label, literature, or DFI database evidence before production use.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "enzyme_relation",
+    "subject_ids": ["grapefruit_juice"],
+    "claim": {
+      "tag": "CYP3A_inhibitor",
+      "mechanism": "intestinal CYP3A inhibition candidate"
+    },
+    "risk_level": "Unknown",
+    "confidence": "Low",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Validate source and target enzyme specificity before production use.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "substance_identity",
+    "subject_ids": ["simvastatin"],
+    "claim": {
+      "name_zh": "辛伐他汀",
+      "name_en": "Simvastatin",
+      "category": "Statin",
+      "identifiers": {
+        "rxnorm_hint": "simvastatin"
+      }
+    },
+    "risk_level": "Unknown",
+    "confidence": "Medium",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Replace with DailyMed/openFDA/RxNorm evidence before production use.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "enzyme_relation",
+    "subject_ids": ["simvastatin"],
+    "claim": {
+      "tag": "CYP3A_substrate"
+    },
+    "risk_level": "Unknown",
+    "confidence": "Low",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Validate source before production use.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "drug_interaction",
+    "subject_ids": ["ibuprofen", "warfarin"],
+    "claim": {
+      "mechanism": "additive bleeding risk candidate",
+      "note": "Prototype interaction demonstrating non-downgrade behavior. Replace with reviewed label/curated DDI evidence."
+    },
+    "risk_level": "Major",
+    "confidence": "Low",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Not a clinical rule.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "food_interaction",
+    "subject_ids": ["grapefruit_juice", "simvastatin"],
+    "claim": {
+      "mechanism": "CYP3A inhibition exposure increase candidate",
+      "note": "Prototype DFI edge. Replace with regulatory label or reviewed DFI evidence."
+    },
+    "risk_level": "Major",
+    "confidence": "Low",
+    "source_tier": "Fixture",
+    "source_name": "Prototype fixture",
+    "source_url": "",
+    "evidence_quote": "Demo fixture only. Not a clinical rule.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "drug_interaction",
+    "subject_ids": ["ibuprofen", "warfarin"],
+    "claim": {
+      "mechanism": "community matrix low-risk placeholder",
+      "note": "This lower community assessment must not downgrade a more severe source."
+    },
+    "risk_level": "Minor",
+    "confidence": "Low",
+    "source_tier": "Community",
+    "source_name": "Community placeholder",
+    "source_url": "",
+    "evidence_quote": "Synthetic conflict test record.",
+    "extraction_method": "manual",
+    "review_status": "unreviewed",
+    "use_policy": "candidate_signal"
+  }
+]

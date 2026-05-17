@@ -1,0 +1,227 @@
+﻿from __future__ import annotations
+
+import argparse
+from datetime import date
+from pathlib import Path
+import sys
+
+from .adapters.chembl import fetch_chembl_facts
+from .adapters.dailymed import fetch_dailymed_facts
+from .adapters.ddinter import find_ddinter_csvs, load_ddinter_csv_facts
+from .adapters.openfda import fetch_label_facts
+from .adapters.psychonautwiki import fetch_substance_facts
+from .adapters.rxnav import fetch_rxnav_facts
+from .export import write_json, write_mobile_seed_files, write_sqlite
+from .fusion import build_dataset, load_facts
+from .io import read_json
+from .source_catalog import source_status_dicts
+from .static_api import export_static_api
+
+DEFAULT_FIXTURE = Path("data/fixtures/evidence_facts.json")
+DEFAULT_OPTIONAL_FACTS = Path("data/optional/public_facts.json")
+DEFAULT_DOSE_RULE_FACTS = Path("data/overrides/dose_rules.json")
+
+
+def extend_facts_from_path(facts: list, path_value: str | None) -> None:
+    if not path_value:
+        return
+    path = Path(path_value)
+    if path.exists():
+        facts.extend(load_facts(read_json(path)))
+
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    raw = read_json(input_path)
+    facts = load_facts(raw)
+    dataset = build_dataset(facts, args.dataset_version)
+    out_dir = Path(args.out)
+    write_mobile_seed_files(out_dir, dataset)
+    write_sqlite(out_dir / "app_seed.sqlite", dataset)
+    print_build_summary(dataset, out_dir)
+    return 0
+
+
+def cmd_demo(args: argparse.Namespace) -> int:
+    args.input = str(DEFAULT_FIXTURE)
+    return cmd_build(args)
+
+
+def cmd_import_ddinter(args: argparse.Namespace) -> int:
+    paths = find_ddinter_csvs(Path(args.input_dir))
+    if not paths:
+        raise SystemExit(f"No DDInter CSV files found in {args.input_dir}")
+    facts = load_ddinter_csv_facts(paths, args.max_interactions, Path(args.zh_aliases) if args.zh_aliases else None)
+    extend_facts_from_path(facts, args.supplement_facts)
+    extend_facts_from_path(facts, args.dose_rule_facts)
+    extend_facts_from_path(facts, args.optional_facts)
+    dataset = build_dataset(facts, args.dataset_version)
+    out_dir = Path(args.out)
+    write_mobile_seed_files(out_dir, dataset)
+    write_sqlite(out_dir / "app_seed.sqlite", dataset)
+    print(f"source_files={len(paths)}")
+    print_build_summary(dataset, out_dir)
+    return 0
+
+
+def cmd_fetch_openfda(args: argparse.Namespace) -> int:
+    return write_facts(fetch_label_facts(args.term, args.limit), Path(args.out))
+
+
+def cmd_fetch_dailymed(args: argparse.Namespace) -> int:
+    return write_facts(fetch_dailymed_facts(args.term, args.limit), Path(args.out))
+
+
+def cmd_fetch_rxnav(args: argparse.Namespace) -> int:
+    return write_facts(fetch_rxnav_facts(args.term, args.limit), Path(args.out))
+
+
+def cmd_fetch_chembl(args: argparse.Namespace) -> int:
+    return write_facts(fetch_chembl_facts(args.term, args.limit), Path(args.out))
+
+
+def cmd_fetch_psychonautwiki(args: argparse.Namespace) -> int:
+    return write_facts(fetch_substance_facts(args.limit, args.offset), Path(args.out))
+
+
+def cmd_fetch_public(args: argparse.Namespace) -> int:
+    facts = []
+    errors: list[str] = []
+    fetchers = [
+        ("rxnav", lambda: fetch_rxnav_facts(args.term, args.limit)),
+        ("chembl", lambda: fetch_chembl_facts(args.term, args.limit)),
+        ("dailymed", lambda: fetch_dailymed_facts(args.term, args.limit)),
+        ("openfda", lambda: fetch_label_facts(args.term, args.limit)),
+    ]
+    for name, fetcher in fetchers:
+        try:
+            facts.extend(fetcher())
+        except Exception as exc:  # network/API failures should not stop other sources
+            errors.append(f"{name}: {exc}")
+    write_json(Path(args.out), [fact.to_dict() for fact in facts])
+    print(f"facts={len(facts)}")
+    if errors:
+        print("errors=" + " | ".join(errors))
+    print(f"out={Path(args.out).resolve()}")
+    return 0
+
+
+def cmd_sources(args: argparse.Namespace) -> int:
+    out = Path(args.out) if args.out else None
+    payload = source_status_dicts()
+    if out:
+        write_json(out, payload)
+        print(f"out={out.resolve()}")
+    else:
+        for source in payload:
+            print(f"{source['key']}\t{source['status']}\t{source['name']}\t{source['note']}")
+    return 0
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    raw = read_json(Path(args.input))
+    facts = load_facts(raw)
+    dataset = build_dataset(facts, args.dataset_version)
+    risk_counts: dict[str, int] = {}
+    for interaction in dataset["interactions_core"]:
+        risk_counts[interaction["risk_level"]] = risk_counts.get(interaction["risk_level"], 0) + 1
+    print(f"substances={len(dataset['substances_core'])}")
+    print(f"interactions={len(dataset['interactions_core'])}")
+    print(f"risk_counts={risk_counts}")
+    return 0
+
+
+
+def cmd_export_static_api(args: argparse.Namespace) -> int:
+    manifest = export_static_api(Path(args.input_dir), Path(args.out))
+    counts = manifest.get("counts", {})
+    print(f"api_version={manifest.get('api_version')}")
+    print(f"substances={counts.get('substances', 0)}")
+    print(f"interactions={counts.get('interactions', 0)}")
+    print(f"dose_rules={counts.get('dose_rules', 0)}")
+    print(f"out={Path(args.out).resolve()}")
+    return 0
+
+def write_facts(facts, out_path: Path) -> int:
+    write_json(out_path, [fact.to_dict() for fact in facts])
+    print(f"facts={len(facts)}")
+    print(f"out={out_path.resolve()}")
+    return 0
+
+
+def print_build_summary(dataset: dict, out_dir: Path) -> None:
+    print(f"dataset_version={dataset['dataset_version']}")
+    print(f"substances={len(dataset['substances_core'])}")
+    print(f"interactions={len(dataset['interactions_core'])}")
+    print(f"facts={len(dataset['evidence_facts'])}")
+    print(f"out={out_dir.resolve()}")
+
+
+def add_term_limit_out(sub, name: str, help_text: str, func) -> None:
+    parser = sub.add_parser(name, help=help_text)
+    parser.add_argument("--term", required=True, help="Drug/substance search term")
+    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--out", required=True)
+    parser.set_defaults(func=func)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Local evidence fusion ETL for metabolic safety app seeds")
+    parser.add_argument("--dataset-version", default=date.today().isoformat(), help="Version string written into seed outputs")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    demo = sub.add_parser("demo", help="Build mobile seed files from bundled fixture data")
+    demo.add_argument("--out", default="build", help="Output directory")
+    demo.set_defaults(func=cmd_demo)
+
+    build = sub.add_parser("build", help="Build mobile seed files from evidence facts JSON")
+    build.add_argument("--input", required=True, help="Evidence facts JSON")
+    build.add_argument("--out", default="build", help="Output directory")
+    build.set_defaults(func=cmd_build)
+
+    import_ddinter = sub.add_parser("import-ddinter", help="Build seed files from downloaded DDInter 2.0 CSV files")
+    import_ddinter.add_argument("--input-dir", default="data/raw/ddinter", help="Directory containing DDInter CSV files")
+    import_ddinter.add_argument("--out", default="build", help="Output directory")
+    import_ddinter.add_argument("--max-interactions", type=int, default=None, help="Optional cap for faster UI tests")
+    import_ddinter.add_argument("--zh-aliases", default="data/overrides/drug_zh_aliases.csv", help="Optional CSV with name_en,name_zh,aliases")
+    import_ddinter.add_argument("--supplement-facts", default="data/overrides/supplemental_facts.json", help="Optional EvidenceFact JSON for substances not covered by DDInter")
+    import_ddinter.add_argument("--dose-rule-facts", default=str(DEFAULT_DOSE_RULE_FACTS), help="Optional dose rule EvidenceFact JSON")
+    import_ddinter.add_argument("--optional-facts", default=str(DEFAULT_OPTIONAL_FACTS), help="Optional public API EvidenceFact JSON cache")
+    import_ddinter.set_defaults(func=cmd_import_ddinter)
+
+    add_term_limit_out(sub, "fetch-openfda", "Fetch source_text facts from openFDA labels", cmd_fetch_openfda)
+    add_term_limit_out(sub, "fetch-dailymed", "Fetch DailyMed SPL metadata facts", cmd_fetch_dailymed)
+    add_term_limit_out(sub, "fetch-rxnav", "Fetch RxNorm identity/mapping facts", cmd_fetch_rxnav)
+    add_term_limit_out(sub, "fetch-chembl", "Fetch ChEMBL molecule facts", cmd_fetch_chembl)
+    add_term_limit_out(sub, "fetch-public", "Fetch public API facts from RxNav, ChEMBL, DailyMed and openFDA", cmd_fetch_public)
+
+    fetch_pw = sub.add_parser("fetch-psychonautwiki", help="Fetch community ROA/duration candidate facts")
+    fetch_pw.add_argument("--limit", type=int, default=10)
+    fetch_pw.add_argument("--offset", type=int, default=0)
+    fetch_pw.add_argument("--out", required=True)
+    fetch_pw.set_defaults(func=cmd_fetch_psychonautwiki)
+
+    export_api = sub.add_parser("export-static-api", help="Export build seed JSON into a GitHub Pages compatible static JSON API")
+    export_api.add_argument("--input-dir", default="build", help="Directory containing init_substances/interactions/dose_rules JSON")
+    export_api.add_argument("--out", default="public/api", help="Output directory for static JSON API")
+    export_api.set_defaults(func=cmd_export_static_api)
+
+    sources = sub.add_parser("sources", help="List source integration status")
+    sources.add_argument("--out", default=None)
+    sources.set_defaults(func=cmd_sources)
+
+    inspect = sub.add_parser("inspect", help="Inspect risk distribution without writing seed files")
+    inspect.add_argument("--input", required=True)
+    inspect.set_defaults(func=cmd_inspect)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

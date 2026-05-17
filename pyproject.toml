@@ -1,0 +1,13 @@
+﻿[project]
+name = "metabolic-safety-etl"
+version = "0.1.0"
+description = "Local-first drug PK/PD/DDI/DFI evidence fusion prototype for mobile seed generation"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+metabolic-etl = "metabolic_safety_etl.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

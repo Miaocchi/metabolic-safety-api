@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>代谢与安全管理桌面测试端</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar app-header">
+    <div class="brand-block">
+      <div class="brand-mark">MS</div>
+      <div>
+        <h1 id="appTitle">个人代谢安全日志</h1>
+        <p id="datasetMeta">加载本地种子库...</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="uiModePill" class="mode-pill">ToC 个人模式</span>
+      <button id="clearJournal" class="ghost">清空本地日志</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="kpi-strip advanced-ui">
+      <div class="kpi-card">
+        <span>活跃摄入</span>
+        <strong id="activeKpi">0</strong>
+      </div>
+      <div class="kpi-card">
+        <span>风险事件</span>
+        <strong id="riskKpi">0</strong>
+      </div>
+      <div class="kpi-card">
+        <span>本地日志</span>
+        <strong id="journalKpi">0</strong>
+      </div>
+      <div class="kpi-card">
+        <span>数据源</span>
+        <strong id="sourceKpi">0</strong>
+      </div>
+    </section>
+    <div class="workspace-column left-column">
+    <section class="panel entry-panel">
+      <div class="panel-title">
+        <h2>快速录入</h2>
+        <span>本地浏览器存储</span>
+      </div>
+      <form id="entryForm" class="entry-form">
+        <label>
+          物质检索
+          <input id="substanceFilter" type="search" placeholder="输入中文或英文过滤药物">
+        </label>
+        <label>
+          物质
+          <select id="substanceSelect" required></select>
+        </label>
+        <div id="selectedSubstanceInfo" class="substance-info"></div>
+        <label>
+          摄入时间
+          <input id="intakeTimeInput" type="datetime-local">
+        </label>
+        <div class="row">
+          <label>
+            剂量
+            <input id="dosageInput" type="number" min="0" step="0.01" value="200" required>
+            <input id="doseSlider" type="range" min="0" max="1000" step="1" value="200" title="快速调整剂量">
+          </label>
+          <label>
+            单位
+            <select id="unitSelect">
+              <option value="mg">mg</option>
+              <option value="ug">ug</option>
+              <option value="g">g</option>
+              <option value="ml">ml</option>
+            </select>
+          </label>
+        </div>
+        <div id="ethanolCalculator" class="calculator-panel hidden">
+          <div class="calculator-title">乙醇换算</div>
+          <div class="row">
+            <label>
+              酒量 ml
+              <input id="drinkVolumeInput" type="number" min="0" max="10000" step="1" value="500">
+            </label>
+            <label>
+              酒精度 %vol
+              <input id="drinkAbvInput" type="number" min="0" max="100" step="0.1" value="5">
+            </label>
+          </div>
+          <div id="ethanolDosePreview" class="calculator-preview">500ml × 5%vol ≈ 19.7g 乙醇</div>
+        </div>
+        <div class="row">
+          <label>
+            给药途径
+            <select id="routeSelect">
+              <option value="Oral">口服</option>
+              <option value="Sublingual">舌下</option>
+              <option value="Insufflated">鼻腔</option>
+              <option value="Topical">经皮</option>
+              <option value="IV">静脉/瞬时</option>
+              <option value="Other">其他</option>
+            </select>
+          </label>
+          <label>
+            胃部状态
+            <select id="stomachSelect">
+              <option value="Light">正常/少量进食</option>
+              <option value="Fasting">完全空腹</option>
+              <option value="Heavy">高脂重餐</option>
+            </select>
+          </label>
+        </div>
+
+        <label>
+          备注
+          <textarea id="noteInput" rows="3" placeholder="可留空"></textarea>
+        </label>
+        <button type="submit" class="primary">保存并检查</button>
+      </form>
+    </section>
+    <section class="panel settings-panel">
+      <div class="panel-title">
+        <h2 id="settingsTitle">个人参数</h2>
+        <span id="sourceCount" class="advanced-ui">0 个源</span>
+      </div>
+      <div class="mode-setting">
+        <div>
+          <div id="modeTitle" class="mode-title">ToC / ToB 视图</div>
+          <div id="modeDesc" class="mode-desc">关闭时为个人使用的 ToC 视图；开启后进入 ToB 控制台，显示数据源运维、指标卡和模型细节。</div>
+        </div>
+        <label class="switch-control">
+          <input id="advancedModeToggle" type="checkbox">
+          <span></span>
+        </label>
+        <strong id="advancedModeState">ToC 个人模式</strong>
+      </div>
+      <div class="theme-setting">
+        <label>
+          &#20027;&#39064;
+          <select id="themeModeSelect">
+            <option value="system">&#36319;&#38543;&#31995;&#32479;</option>
+            <option value="light">&#27973;&#33394;</option>
+            <option value="dark">&#28145;&#33394;</option>
+          </select>
+        </label>
+      </div>
+      <div class="remote-source-panel advanced-ui">
+        <div class="remote-source-head">
+          <strong>&#36828;&#31243;&#38745;&#24577; API &#22238;&#36864;</strong>
+          <label class="inline-check">
+            <input id="remoteFallbackEnabled" type="checkbox">
+            <span>&#26412;&#22320;&#26080;&#21629;&#20013;&#26102;&#26597;&#35810;&#36828;&#31243;&#28304;</span>
+          </label>
+        </div>
+        <label>
+          &#36828;&#31243;&#38745;&#24577; API &#22320;&#22336;&#65288;GitHub / Cloudflare Pages&#65289;
+          <input id="remoteApiBase" type="url" placeholder="https://&lt;project&gt;.pages.dev/api">
+        </label>
+        <div class="remote-source-actions">
+          <button id="remoteApiSave" class="ghost" type="button">&#20445;&#23384;&#36828;&#31243;&#28304;</button>
+          <button id="remoteApiTest" class="ghost" type="button">&#27979;&#35797;&#36830;&#25509;</button>
+        </div>
+        <div id="remoteApiStatus" class="remote-api-status">&#36828;&#31243;&#22238;&#36864;&#40664;&#35748;&#20851;&#38381;&#65307;&#24320;&#21551;&#21518;&#21482;&#22312;&#26412;&#22320;&#26816;&#32034;&#26080;&#21629;&#20013;&#26102;&#35831;&#27714;&#36828;&#31243; JSON&#12290;</div>
+      </div>
+      <div class="fixed-profile-title">&#22266;&#23450;&#20010;&#20307;&#20195;&#35874;&#21442;&#25968;</div>
+      <details class="profile-details settings-profile" open>
+        <summary>
+          <span>个体代谢参数</span>
+          <small>身高 / 体重 / 年龄 / 体脂 / 睡眠 / 体温</small>
+        </summary>
+        <div class="profile-fields">
+          <div class="row">
+            <label>
+              体重 kg
+              <input id="weightInput" type="number" min="25" max="220" step="0.1" value="70">
+            </label>
+            <label>
+              身高 cm
+              <input id="heightInput" type="number" min="120" max="230" step="0.1" value="170">
+            </label>
+          </div>
+          <div class="row">
+            <label>
+              年龄
+              <input id="ageInput" type="number" min="0" max="110" step="1" value="35">
+            </label>
+            <label>
+              体脂率 %
+              <input id="bodyFatInput" type="number" min="3" max="70" step="0.1" value="20">
+            </label>
+          </div>
+          <div class="row">
+            <label>
+              睡眠不足 h
+              <input id="sleepDebtInput" type="number" min="0" max="72" step="0.5" value="0">
+            </label>
+            <label>
+              体温状态
+              <select id="coreTempInput">
+                <option value="37">正常</option>
+                <option value="38.3">发热</option>
+                <option value="39.5">发烧</option>
+              </select>
+            </label>
+          </div>
+        </div>
+      </details>
+      <div class="source-controls advanced-ui">
+        <input id="sourceTerm" type="search" placeholder="可选：临时指定单个关键词；留空使用当前选中物质">
+        <button id="syncPublicSources" class="ghost" type="button">联网同步公开源</button>
+        <button id="rebuildDataset" class="ghost" type="button">全量重建本地库</button>
+        <button id="labelBulkManifest" class="ghost" type="button">&#20840;&#37327;&#26631;&#31614;&#28165;&#21333;</button>
+        <button id="bulkSyncAll" class="ghost" type="button">&#20840;&#37327;&#25289;&#25152;&#26377;&#20179;&#24211;</button>
+      </div>
+      <div id="rebuildProgress" class="progress-panel hidden advanced-ui">
+        <div class="progress-track"><div id="rebuildProgressBar" class="progress-bar"></div></div>
+        <div id="rebuildProgressText" class="progress-text">等待重建。</div>
+      </div>
+      <div id="sourceStatus" class="source-status empty advanced-ui">正在加载数据源状态。</div>
+    </section>
+    </div>
+    <div class="workspace-column center-column">
+    <section class="panel chart-panel">
+      <div class="panel-title">
+        <h2 id="chartTitle">个人动态曲线</h2>
+        <span id="modelMeta">体重/体脂/代谢表型/途径/胃部状态参与修正</span>
+      </div>
+      <div class="curve-controls" aria-label="&#26354;&#32447;&#32553;&#25918;">
+        <button id="curvePanLeft" class="ghost" type="button" title="&#21521;&#36807;&#21435;&#31227;&#21160;&#26102;&#38388;&#36724;">&larr;</button>
+        <button id="curveZoomOut" class="ghost" type="button" title="&#32553;&#23567;&#26102;&#38388;&#36724;">-</button>
+        <input id="curveZoomSlider" type="range" min="0.25" max="8" step="0.25" value="1" title="&#26354;&#32447;&#26102;&#38388;&#36724;&#32553;&#25918;">
+        <button id="curveZoomIn" class="ghost" type="button" title="&#25918;&#22823;&#26102;&#38388;&#36724;">+</button>
+        <button id="curvePanRight" class="ghost" type="button" title="&#21521;&#26410;&#26469;&#31227;&#21160;&#26102;&#38388;&#36724;">&rarr;</button>
+        <button id="curveZoomReset" class="ghost" type="button">&#37325;&#32622;</button>
+        <span id="curveZoomLabel">1.00&times; &middot; 12h</span>
+      </div>
+      <div class="chart-top-legend"><span class="ring-swatch"></span>血药浓度 (mg/L)</div>
+      <canvas id="curveCanvas" width="1100" height="360"></canvas>
+      <div id="legend" class="legend"></div>
+    </section>
+    <section class="panel pmi-panel advanced-ui">
+      <div class="panel-title">
+        <h2>PMI 个体代谢指数</h2>
+        <span id="pmiScoreMeta">等待模型计算</span>
+      </div>
+      <div id="pmiSummary" class="pmi-summary empty">暂无活跃摄入，保存日志后生成 PMI。</div>
+    </section>
+    <section class="panel journal-panel">
+      <div class="panel-title">
+        <h2 id="journalTitle">本地日志</h2>
+        <span id="journalCount">0 条</span>
+      </div>
+      <div id="journalList" class="journal-list empty">还没有录入。</div>
+    </section>
+    <section class="panel data-panel advanced-ui">
+      <div class="panel-title">
+        <h2>库数据检索</h2>
+        <span id="dataCount">0 条</span>
+      </div>
+      <div class="data-search">
+        <input id="dataSearch" type="search" placeholder="搜索药物或相互作用，例如 华法林 / warfarin">
+      </div>
+      <div id="dataList" class="risk-list empty">正在加载。</div>
+    </section>
+    </div>
+    <div class="workspace-column right-column">
+    <section class="panel risks-panel">
+      <div class="panel-title">
+        <h2 id="riskTitle">个人风险提示</h2>
+        <span id="riskCount">0 条</span>
+      </div>
+      <div id="combinedEffectSummary" class="combined-effect empty">暂无活跃药物。</div>
+      <div id="sideEffectWarning" class="side-effect-warning empty">暂无副作用或过量警告。</div>
+      <div id="riskList" class="risk-list empty">暂无活跃冲突。Unknown 表示资料不足，不代表安全。</div>
+    </section>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

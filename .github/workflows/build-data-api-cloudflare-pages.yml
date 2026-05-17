@@ -1,0 +1,92 @@
+name: Build Static Drug API to Cloudflare Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 19 * * 0"
+  push:
+    paths:
+      - "data/**"
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/build-data-api-cloudflare-pages.yml"
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: "cloudflare-pages-drug-api"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    name: Build and deploy static API
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Test ETL
+        run: python -m unittest discover -s tests
+
+      - name: Build fused seed database
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find data/raw/ddinter -type f -name '*.csv' 2>/dev/null | grep -q .; then
+            python -m metabolic_safety_etl.cli import-ddinter --input-dir data/raw/ddinter --out build
+          else
+            python -m metabolic_safety_etl.cli demo --out build
+          fi
+
+      - name: Export static JSON API
+        run: python -m metabolic_safety_etl.cli export-static-api --input-dir build --out public/api
+
+      - name: Write static site metadata
+        shell: bash
+        run: |
+          cat > public/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Metabolic Safety Static API</title></head>
+          <body style="font-family:system-ui,sans-serif;max-width:820px;margin:40px auto;line-height:1.55;padding:0 18px">
+            <h1>Metabolic Safety Static API</h1>
+            <p>This is a Cloudflare Pages hosted static JSON API. The client reads <code>/api/search/index.json</code> and filters locally.</p>
+            <ul>
+              <li><a href="api/manifest.json">api/manifest.json</a></li>
+              <li><a href="api/search/index.json">api/search/index.json</a></li>
+            </ul>
+          </body>
+          </html>
+          HTML
+          cat > public/_headers <<'HEADERS'
+          /api/*
+            Access-Control-Allow-Origin: *
+            Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+            Access-Control-Max-Age: 86400
+            Cache-Control: public, max-age=3600
+          /api/manifest.json
+            Access-Control-Allow-Origin: *
+            Cache-Control: no-cache
+          HEADERS
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT_NAME: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'metabolic-safety-api' }}
+        shell: bash
+        run: |
+          npx wrangler@latest pages project create "$PROJECT_NAME" --production-branch=main || true
+          npx wrangler@latest pages deploy public --project-name="$PROJECT_NAME" --branch=main

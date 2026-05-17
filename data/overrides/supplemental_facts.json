@@ -1,0 +1,119 @@
+[
+  {
+    "fact_type": "substance_identity",
+    "subject_ids": ["tandospirone"],
+    "claim": {
+      "name_zh": "坦度螺酮",
+      "name_en": "Tandospirone",
+      "category": "Anxiolytic / 5-HT1A receptor partial agonist",
+      "solubility": "Lipophilic",
+      "identifiers": {
+        "pubchem_cid": "91273",
+        "aliases": "枸橼酸坦度螺酮|Tandospirone citrate|Sediel"
+      }
+    },
+    "risk_level": "Unknown",
+    "confidence": "Medium",
+    "source_tier": "Literature",
+    "source_name": "PubChem / Frontiers Pharmacology",
+    "source_url": "https://pubchem.ncbi.nlm.nih.gov/compound/Tandospirone",
+    "evidence_quote": "Tandospirone identity and pharmacology candidate record for local lookup.",
+    "extraction_method": "manual",
+    "review_status": "machine_checked",
+    "use_policy": "evidence_source"
+  },
+  {
+    "fact_type": "pharmacokinetics",
+    "subject_ids": ["tandospirone"],
+    "claim": {
+      "half_life_hours": 1.38,
+      "onset_minutes": 60,
+      "duration_minutes": 240,
+      "route": "oral"
+    },
+    "risk_level": "Unknown",
+    "confidence": "Low",
+    "source_tier": "Literature",
+    "source_name": "Frontiers in Pharmacology 2023",
+    "source_url": "https://www.frontiersin.org/journals/pharmacology/articles/10.3389/fphar.2023.1283103",
+    "evidence_quote": "Reported tandospirone half-life in an in-vivo pharmacokinetic study; use as candidate PK until label-grade data is added.",
+    "extraction_method": "manual",
+    "review_status": "machine_checked",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "enzyme_relation",
+    "subject_ids": ["tandospirone"],
+    "claim": {
+      "tag": "CYP3A4_substrate",
+      "mechanism": "Tandospirone metabolism is primarily mediated by CYP3A4 in human liver microsome evidence."
+    },
+    "risk_level": "Unknown",
+    "confidence": "Medium",
+    "source_tier": "Literature",
+    "source_name": "PubMed PMID 18348473",
+    "source_url": "https://pubmed.ncbi.nlm.nih.gov/18348473/",
+    "evidence_quote": "Identification of CYP3A4 as the primary cytochrome P450 responsible for tandospirone metabolism.",
+    "extraction_method": "manual",
+    "review_status": "machine_checked",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "substance_identity",
+    "subject_ids": ["tea_polyphenols"],
+    "claim": {
+      "name_zh": "茶多酚",
+      "name_en": "Tea polyphenols",
+      "category": "Supplement/Food",
+      "solubility": "Hydrophilic",
+      "identifiers": {
+        "aliases": "绿茶多酚|儿茶素|EGCG|表没食子儿茶素没食子酸酯|Green tea polyphenols|Catechins|Epigallocatechin gallate"
+      }
+    },
+    "risk_level": "Unknown",
+    "confidence": "Medium",
+    "source_tier": "Literature",
+    "source_name": "PubChem / peer-reviewed green tea catechin literature",
+    "source_url": "https://pubchem.ncbi.nlm.nih.gov/compound/Epigallocatechin-gallate",
+    "evidence_quote": "Tea polyphenols and EGCG identity record for local lookup; interaction evidence is handled as candidate signal unless confirmed by curated interaction sources.",
+    "extraction_method": "manual",
+    "review_status": "machine_checked",
+    "use_policy": "evidence_source"
+  },
+  {
+    "fact_type": "pharmacokinetics",
+    "subject_ids": ["tea_polyphenols"],
+    "claim": {
+      "half_life_hours": 3.4,
+      "onset_minutes": 60,
+      "duration_minutes": 360,
+      "route": "oral"
+    },
+    "risk_level": "Unknown",
+    "confidence": "Low",
+    "source_tier": "Literature",
+    "source_name": "green tea catechin human PK literature",
+    "source_url": "https://pubmed.ncbi.nlm.nih.gov/?term=EGCG+human+pharmacokinetics+half-life",
+    "evidence_quote": "Candidate half-life based on human green tea catechin PK literature; use for visualization only until label-grade or curated PK data is added.",
+    "extraction_method": "manual",
+    "review_status": "machine_checked",
+    "use_policy": "candidate_signal"
+  },
+  {
+    "fact_type": "enzyme_relation",
+    "subject_ids": ["tea_polyphenols"],
+    "claim": {
+      "tag": "COMT_interaction_candidate",
+      "mechanism": "Tea catechins such as EGCG are reported as catechol-containing compounds interacting with methylation pathways; treat as candidate signal, not as a deterministic contraindication."
+    },
+    "risk_level": "Unknown",
+    "confidence": "Low",
+    "source_tier": "Literature",
+    "source_name": "green tea catechin metabolism literature",
+    "source_url": "https://pubmed.ncbi.nlm.nih.gov/?term=EGCG+COMT+metabolism",
+    "evidence_quote": "Candidate enzyme/pathway tag for tea catechin metabolism; kept low confidence to avoid over-warning.",
+    "extraction_method": "manual",
+    "review_status": "machine_checked",
+    "use_policy": "candidate_signal"
+  }
+]

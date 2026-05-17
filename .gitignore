@@ -1,0 +1,28 @@
+# Python / JS caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+
+# Local generated databases and logs
+build/
+build_ddinter/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+
+# Large raw downloads kept off GitHub
+/data/raw/openfda_label/
+/data/raw/dailymed_spl/
+/data/raw/chembl/
+/data/raw/foodrugs/
+/data/raw/onsides/
+/data/raw/pharmgkb/
+
+# Generated static export; Actions rebuilds it
+/public/
+
+# Local env/secrets
+.env
+.dev.vars
