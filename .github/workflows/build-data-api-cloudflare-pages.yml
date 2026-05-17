@@ -2,15 +2,6 @@ name: Build Static Drug API to Cloudflare Pages
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "41 19 * * 0"
-  push:
-    paths:
-      - "data/**"
-      - "src/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - ".github/workflows/build-data-api-cloudflare-pages.yml"
 
 permissions:
   contents: read
