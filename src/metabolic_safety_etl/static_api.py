@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import zipfile
 from typing import Any
 
 
@@ -29,6 +30,122 @@ def reset_output_dir(out_dir: Path) -> None:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_key(value: str) -> str:
+    normalized = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "unknown"))
+    normalized = "_".join(part for part in normalized.split("_") if part)
+    return normalized or "unknown"
+
+
+def write_source_library(api_out_dir: Path, evidence_facts: list[dict[str, Any]]) -> dict[str, Any]:
+    by_source: dict[str, dict[str, Any]] = {}
+    for fact in evidence_facts:
+        source_name = str(fact.get("source_name") or "Unknown source")
+        key = source_key(source_name)
+        row = by_source.setdefault(
+            key,
+            {
+                "key": key,
+                "source_name": source_name,
+                "source_tier": fact.get("source_tier") or "Unknown",
+                "source_url": fact.get("source_url") or "",
+                "facts": 0,
+                "fact_types": {},
+                "risk_levels": {},
+                "confidence": {},
+                "review_status": {},
+                "use_policy": {},
+                "sample_subjects": [],
+            },
+        )
+        row["facts"] += 1
+        for group_key, fact_key in (
+            ("fact_types", "fact_type"),
+            ("risk_levels", "risk_level"),
+            ("confidence", "confidence"),
+            ("review_status", "review_status"),
+            ("use_policy", "use_policy"),
+        ):
+            value = str(fact.get(fact_key) or "Unknown")
+            row[group_key][value] = row[group_key].get(value, 0) + 1
+        if not row.get("source_url") and fact.get("source_url"):
+            row["source_url"] = fact.get("source_url")
+        subjects = fact.get("subject_ids") or []
+        if isinstance(subjects, list):
+            for subject in subjects:
+                if len(row["sample_subjects"]) >= 12:
+                    break
+                subject_value = str(subject)
+                if subject_value and subject_value not in row["sample_subjects"]:
+                    row["sample_subjects"].append(subject_value)
+
+    source_dir = api_out_dir / "sources"
+    rows = sorted(by_source.values(), key=lambda item: (-int(item.get("facts") or 0), item.get("source_name") or ""))
+    for row in rows:
+        detail_path = source_dir / "by-key" / f"{row['key']}.json"
+        write_compact_json(detail_path, row)
+        row["path"] = f"sources/by-key/{row['key']}.json"
+    index_payload = {
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "sources_count": len(rows),
+        "facts_count": len(evidence_facts),
+        "merge_policy": "Online source layers are fused by source tier and confidence. Higher-risk reviewed evidence is not downgraded by lower-tier community or signal data.",
+        "items": rows,
+    }
+    write_compact_json(source_dir / "index.json", index_payload)
+    return {
+        "index": "sources/index.json",
+        "sources_count": len(rows),
+        "facts_count": len(evidence_facts),
+    }
+
+
+def write_full_package(input_dir: Path, api_out_dir: Path, seed_manifest: dict[str, Any], counts: dict[str, int], source_library: dict[str, Any]) -> dict[str, Any]:
+    package_dir = api_out_dir / "packages" / "full"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = package_dir / "fused-online-library.zip"
+    files = [
+        (input_dir / "manifest.json", "manifest.json"),
+        (input_dir / "init_substances.json", "init_substances.json"),
+        (input_dir / "init_interactions.json", "init_interactions.json"),
+        (input_dir / "init_dose_rules.json", "init_dose_rules.json"),
+        (input_dir / "evidence_facts.json", "evidence_facts.json"),
+    ]
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for source, arcname in files:
+            if source.exists():
+                archive.write(source, arcname)
+    package_manifest = {
+        "package_version": "fused-online-library-v1",
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "dataset_version": seed_manifest.get("dataset_version"),
+        "counts": counts,
+        "source_library": source_library,
+        "files": {
+            "zip": "fused-online-library.zip",
+            "zip_sha256": sha256_file(zip_path),
+            "zip_bytes": zip_path.stat().st_size,
+        },
+        "local_policy": "The local app keeps its current lightweight local seed, private journal and profile storage. This full package is hosted online for remote fallback, review tools and optional future import flows only.",
+        "merge_policy": "This package is the fused read-only online library. It is built from all included open/local source layers with source-tier precedence; lower-tier sources can supplement aliases, PK candidates and evidence text but cannot downgrade higher-risk reviewed rules.",
+        "warning": seed_manifest.get("warning") or "Prototype data. Do not use as clinical decision support without source review and validation.",
+    }
+    write_compact_json(package_dir / "manifest.json", package_manifest)
+    return {
+        "manifest": "packages/full/manifest.json",
+        "zip": "packages/full/fused-online-library.zip",
+        "format": package_manifest["package_version"],
+        "zip_sha256": package_manifest["files"]["zip_sha256"],
+        "zip_bytes": package_manifest["files"]["zip_bytes"],
+    }
 
 
 def id_path(prefix: str, substance_id: str) -> str:
@@ -128,6 +245,9 @@ def export_static_api(input_dir: Path, out_dir: Path, reset: bool = True) -> dic
     interactions = read_json(input_dir / "init_interactions.json", [])
     dose_rules = read_json(input_dir / "init_dose_rules.json", [])
     seed_manifest = read_json(input_dir / "manifest.json", {})
+    evidence_facts = read_json(input_dir / "evidence_facts.json", [])
+    if not isinstance(evidence_facts, list):
+        evidence_facts = []
 
     substances_by_id = {str(row.get("id")): row for row in substances if row.get("id")}
     paths_by_id = {
@@ -175,21 +295,33 @@ def export_static_api(input_dir: Path, out_dir: Path, reset: bool = True) -> dic
         rows.sort(key=lambda item: str(item.get("rule_id") or ""))
         write_compact_json(out_dir / paths_by_id.get(substance_id, {"dose_rules": id_path("dose-rules/by-substance", substance_id)})["dose_rules"], rows)
 
+    counts = {
+        "substances": len(substances_by_id),
+        "interactions": len(interactions),
+        "dose_rules": len(dose_rules),
+    }
+    source_library = write_source_library(out_dir, evidence_facts)
+    full_package = write_full_package(input_dir, out_dir, seed_manifest, counts, source_library)
+
     manifest = {
         "api_version": API_VERSION,
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "dataset_version": seed_manifest.get("dataset_version"),
-        "counts": {
-            "substances": len(substances_by_id),
-            "interactions": len(interactions),
-            "dose_rules": len(dose_rules),
-        },
+        "counts": counts,
         "paths": {
             "search_index": "search/index.json",
             "substance_by_id": "search index item paths.substance",
             "interactions_by_substance": "search index item paths.interactions",
             "dose_rules_by_substance": "search index item paths.dose_rules",
         },
+        "online_library": {
+            "mode": "remote_static_fused_source_layers",
+            "source_library": source_library,
+            "full_package": full_package,
+            "local_policy": "Local app storage remains local-first; this online library is queried only when remote fallback is enabled or when a review/import tool explicitly downloads the package.",
+        },
+        "full_package": full_package,
+        "source_library": source_library,
         "privacy_note": "Static API only receives HTTP requests for the files the client fetches. Enable remote fallback only if sending search terms/IDs to the configured host is acceptable.",
         "warning": seed_manifest.get("warning") or "Prototype data. Do not use as clinical decision support without source review and validation.",
     }

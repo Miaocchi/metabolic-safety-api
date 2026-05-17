@@ -51,6 +51,9 @@ class StaticApiExportTests(unittest.TestCase):
             (build / "init_dose_rules.json").write_text(json.dumps([
                 {"rule_id": "lorazepam_single", "subject_id": "lorazepam", "thresholds": [{"limit": 10}]}
             ], ensure_ascii=False), encoding="utf-8")
+            (build / "evidence_facts.json").write_text(json.dumps([
+                {"fact_id": "f1", "fact_type": "substance_identity", "subject_ids": ["lorazepam"], "claim": {"name_en": "Lorazepam"}, "source_name": "Test Source", "source_tier": "CuratedDB", "confidence": "High", "risk_level": "Unknown", "review_status": "machine_checked", "use_policy": "evidence_source"}
+            ], ensure_ascii=False), encoding="utf-8")
 
             manifest = export_static_api(build, root / "public" / "api")
 
@@ -64,6 +67,11 @@ class StaticApiExportTests(unittest.TestCase):
             self.assertEqual(interactions[0]["substance_a_name"], "\u4e59\u9187")
             dose_rules = json.loads((root / "public" / "api" / lorazepam["paths"]["dose_rules"]).read_text(encoding="utf-8"))
             self.assertEqual(dose_rules[0]["rule_id"], "lorazepam_single")
+            self.assertEqual(manifest["source_library"]["sources_count"], 1)
+            self.assertTrue((root / "public" / "api" / manifest["source_library"]["index"]).exists())
+            package_path = root / "public" / "api" / manifest["online_library"]["full_package"]["zip"]
+            self.assertTrue(package_path.exists())
+            self.assertGreater(package_path.stat().st_size, 0)
 
 
 if __name__ == "__main__":

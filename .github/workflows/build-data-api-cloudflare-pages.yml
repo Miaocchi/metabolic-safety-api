@@ -57,6 +57,8 @@ jobs:
             <ul>
               <li><a href="api/manifest.json">api/manifest.json</a></li>
               <li><a href="api/search/index.json">api/search/index.json</a></li>
+              <li><a href="api/sources/index.json">api/sources/index.json</a></li>
+              <li><a href="api/packages/full/manifest.json">api/packages/full/manifest.json</a></li>
             </ul>
           </body>
           </html>

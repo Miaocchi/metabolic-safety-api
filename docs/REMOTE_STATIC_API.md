@@ -14,17 +14,24 @@ Goal: keep the desktop/mobile client lightweight. The local app keeps the core s
 
 GitHub Pages does not run a dynamic backend. The API is therefore a static file API:
 
-- `api/manifest.json`: API version, dataset version, counts, and path templates.
+- `api/manifest.json`: API version, dataset version, counts, path templates, and online library package metadata.
 - `api/search/index.json`: compact search index. The client downloads it and filters locally.
-- `api/substances/by-id/{id}.json`: one substance detail record.
-- `api/interactions/by-substance/{id}.json`: DDI/DFI rows involving one substance.
-- `api/dose-rules/by-substance/{id}.json`: dose threshold rules involving one substance.
+- `api/substances/by-id/{hash}.json`: one substance detail record.
+- `api/interactions/by-substance/{hash}.json`: DDI/DFI rows involving one substance.
+- `api/dose-rules/by-substance/{hash}.json`: dose threshold rules involving one substance.
+- `api/sources/index.json`: source-layer summary showing which upstreams contributed facts.
+- `api/packages/full/manifest.json`: full fused online package metadata and checksum.
+- `api/packages/full/fused-online-library.zip`: optional full online library package for review/import tools; local clients do not download it automatically.
 
 Configure the local app with the `/api` base URL, for example:
 
 ```text
 https://<your-name>.github.io/<repo>/api
 ```
+
+## Local Boundary
+
+The desktop/mobile app remains local-first. It keeps the original local seed, private journal, and profile storage. The online library is a remote fallback and review source: it can answer misses through static JSON paths, while the full package is only for explicit tooling or future import flows.
 
 ## Privacy Boundary
 

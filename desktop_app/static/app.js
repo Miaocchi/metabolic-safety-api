@@ -820,6 +820,19 @@ function formatNumber(value, fractionDigits = 1) {
   });
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${formatNumber(size, size >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
 function selectedSubstance() {
   return state.substanceById.get($("substanceSelect")?.value);
 }
@@ -2225,11 +2238,11 @@ function sourceCard(source) {
   const last = sourceUpdateSummary(source);
   const directLabel = source.is_direct_public ? "\u516c\u5f00 API" : source.status === "license_required" ? "\u9700\u6388\u6743" : source.status?.includes("pending") ? "\u5f85\u63a5\u5165" : "\u672c\u5730\u5df2\u7eb3\u5165";
   const updateLabel = source.key === "psychonautwiki" ? "\u6279\u91cf\u540c\u6b65\u5019\u9009" : "\u6309\u5f53\u524d\u7269\u8d28\u8865\u5145";
-  const bulkLabel = source.bulk_update_large ? "\u5168\u91cf\u62c9\u53d6\u6b64\u6e90\uff08\u5927\u6587\u4ef6\uff09" : (source.bulk_update_label || "\u5168\u91cf\u5904\u7406\u6b64\u6e90");
+  const onlineLabel = source.status === "license_required" ? "\u9700\u6388\u6743\u540e\u518d\u5165\u7ebf\u4e0a\u5e93" : "\u7ebf\u4e0a\u5e93\u7edf\u4e00\u878d\u5408";
   const rebuildLine = source.last_update?.mode === "included_in_full_rebuild" ? "\u5df2\u7eb3\u5165\u6700\u8fd1\u4e00\u6b21\u5168\u91cf\u91cd\u5efa\u3002" : "";
   const factLine = source.is_direct_public ? `\u5019\u9009\u4e8b\u5b9e\uff1a${source.optional_facts_count || 0} \u6761` : "";
   const scopeLine = source.is_direct_public && source.key !== "psychonautwiki"
-    ? "\u201c\u6309\u5f53\u524d\u7269\u8d28\u8865\u5145\u201d\u662f\u5173\u952e\u8bcd API\uff1b\u201c\u5168\u91cf\u62c9\u53d6\u6b64\u6e90\u201d\u4f1a\u4e0b\u8f7d\u5b98\u65b9\u6279\u91cf\u5305\u6216\u8bb0\u5f55\u5168\u91cf\u6765\u6e90\u72b6\u6001\u3002"
+    ? "\u201c\u6309\u5f53\u524d\u7269\u8d28\u8865\u5145\u201d\u662f\u672c\u5730\u4e34\u65f6\u8865\u76f2\uff1b\u7ebf\u4e0a\u5168\u91cf\u5e93\u7531 GitHub Actions \u7edf\u4e00\u878d\u5408\u6784\u5efa\uff0c\u672c\u5730\u4e0d\u81ea\u52a8\u4e0b\u8f7d\u5927\u5305\u3002"
     : "";
   card.innerHTML = `
     <header>
@@ -2244,7 +2257,7 @@ function sourceCard(source) {
     <div class="card-note">${escapeHtml(source.url || "")}</div>
     <div class="source-actions">
       ${source.is_direct_public ? `<button class="ghost" type="button" data-update-source="${escapeHtml(source.key)}">${escapeHtml(updateLabel)}</button>` : ""}
-      ${source.can_bulk_update ? `<button class="ghost" type="button" data-bulk-source="${escapeHtml(source.key)}" data-large="${source.bulk_update_large ? "1" : "0"}">${escapeHtml(bulkLabel)}</button>` : ""}
+      ${source.can_bulk_update ? `<button class="ghost" type="button" disabled>${escapeHtml(onlineLabel)}</button>` : ""}
       ${source.status === "license_required" ? `<button class="ghost" type="button" disabled>\u5546\u4e1a\u6388\u6743\u540e\u63a5\u5165</button>` : ""}
     </div>
   `;
@@ -2341,6 +2354,35 @@ async function showLabelBulkManifest() {
     return `${sourceNames[item.source] || item.source}\uff1a${parts.length} \u4e2a zip \u5206\u5305\uff0c${Number(records || 0).toLocaleString("zh-CN")} \u6761\u6807\u7b7e/\u6587\u4ef6\uff0c\u7ea6 ${(sizeMb / 1024).toFixed(1)} GB`;
   });
   setSourceMessage(`\u8fd9\u662f\u5b98\u65b9\u5168\u91cf\u4e0b\u8f7d\u5305\u6e05\u5355\uff0c\u8fd8\u6ca1\u6709\u4e0b\u8f7d\u5230\u672c\u673a\uff1a${lines.join("\uff1b")}\u3002\u5b8c\u6574\u62c9\u53d6\u4f1a\u5199\u5165 data/raw\uff0c\u4f53\u91cf\u5f88\u5927\uff0c\u7528\u4e8e\u79bb\u7ebf ETL \u548c\u5242\u91cf\u89c4\u5219\u62bd\u53d6\uff0c\u4e0d\u662f\u6d4f\u89c8\u5668 API \u76f4\u63a5\u540c\u6b65\u3002`, false);
+}
+
+async function showRemoteFullLibrary() {
+  saveRemoteConfigFromControls();
+  if (!state.remoteConfig.baseUrl) {
+    setSourceMessage("\u8bf7\u5148\u5728\u8fdc\u7a0b\u9759\u6001 API \u5730\u5740\u4e2d\u586b\u5199 GitHub Pages /api\u3002", true);
+    return;
+  }
+  setSourceMessage("\u6b63\u5728\u8bfb\u53d6\u7ebf\u4e0a\u5168\u91cf\u878d\u5408\u5e93 manifest...", false);
+  const manifest = await fetchRemoteJson("manifest.json", { cache: "no-cache" });
+  state.remoteManifest = manifest;
+  const counts = manifest.counts || {};
+  const online = manifest.online_library || {};
+  const sourceLibrary = online.source_library || manifest.source_library || {};
+  const fullPackage = online.full_package || manifest.full_package || {};
+  let packageDetail = null;
+  if (fullPackage.manifest) {
+    try {
+      packageDetail = await fetchRemoteJson(fullPackage.manifest, { cache: "no-cache" });
+    } catch {
+      packageDetail = null;
+    }
+  }
+  const zipBytes = packageDetail?.files?.zip_bytes || fullPackage.zip_bytes || 0;
+  const sourceCount = sourceLibrary.sources_count || packageDetail?.source_library?.sources_count || 0;
+  const factCount = sourceLibrary.facts_count || packageDetail?.source_library?.facts_count || 0;
+  const message = `\u7ebf\u4e0a\u5168\u91cf\u5e93\u5df2\u5c31\u7eea\uff1a${formatNumber(counts.substances || 0, 0)} \u4e2a\u7269\u8d28\uff0c${formatNumber(counts.interactions || 0, 0)} \u6761\u76f8\u4e92\u4f5c\u7528\uff0c${formatNumber(counts.dose_rules || 0, 0)} \u6761\u5242\u91cf\u89c4\u5219\uff1b\u6e90\u5c42 ${formatNumber(sourceCount, 0)} \u4e2a\uff0c\u8bc1\u636e\u4e8b\u5b9e ${formatNumber(factCount, 0)} \u6761\uff1b\u5168\u91cf\u5305 ${formatBytes(zipBytes)}\u3002\u672c\u5730\u4ecd\u4fdd\u7559\u539f\u672c\u8f7b\u91cf\u65b9\u6848\uff0c\u4e0d\u4f1a\u81ea\u52a8\u4e0b\u8f7d\u5168\u91cf\u5305\u3002`;
+  setSourceMessage(message, false);
+  setRemoteApiStatus(message, "ok");
 }
 
 async function syncPublicSourcesFromSettings() {
@@ -2440,6 +2482,7 @@ async function boot() {
   state.substances = payload.substances || [];
   state.substanceById = new Map(state.substances.map((item) => [item.id, item]));
   state.doseRules = payload.doseRules || [];
+  if ($("bulkSyncAll")) $("bulkSyncAll").textContent = "查看线上全量库";
   loadRemoteConfig();
   loadProfile();
   loadJournal();
@@ -2583,7 +2626,7 @@ $("labelBulkManifest")?.addEventListener("click", () => {
   showLabelBulkManifest().catch((error) => setSourceMessage(error.message, true));
 });
 $("bulkSyncAll")?.addEventListener("click", () => {
-  bulkSyncSource("all").catch((error) => {
+  showRemoteFullLibrary().catch((error) => {
     setTaskButtonsDisabled(false);
     setSourceMessage(error.message, true);
   });
