@@ -51,9 +51,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     env:
-      STREAM_RAW_SOURCES: ${{ github.event_name == 'workflow_dispatch' && inputs.stream_raw_sources || 'false' }}
+      STREAM_RAW_SOURCES: ${{ github.event_name == 'workflow_dispatch' && inputs.stream_raw_sources || 'true' }}
       RAW_STREAM_SOURCES: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_stream_sources || 'openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb' }}
-      RAW_MAX_RECORDS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_max_records || '100000' }}
+      RAW_MAX_RECORDS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_max_records || '0' }}
       RAW_STREAM_MAX_PARTS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_stream_max_parts || '0' }}
     steps:
       - name: Checkout
@@ -70,6 +70,14 @@ jobs:
 
       - name: Test ETL
         run: python -m unittest discover -s tests
+
+      - name: Print raw source streaming configuration
+        shell: bash
+        run: |
+          echo "STREAM_RAW_SOURCES=${STREAM_RAW_SOURCES}"
+          echo "RAW_STREAM_SOURCES=${RAW_STREAM_SOURCES}"
+          echo "RAW_MAX_RECORDS=${RAW_MAX_RECORDS}"
+          echo "RAW_STREAM_MAX_PARTS=${RAW_STREAM_MAX_PARTS}"
 
       - name: Build fused seed database and static API
         shell: bash
