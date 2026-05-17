@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 from datetime import date
@@ -14,6 +14,7 @@ from .adapters.rxnav import fetch_rxnav_facts
 from .export import write_json, write_mobile_seed_files, write_sqlite
 from .fusion import build_dataset, load_facts
 from .io import read_json
+from .raw_sources import load_raw_source_facts
 from .public_enrichment import (
     candidate_terms_from_dataset,
     dedupe_facts,
@@ -168,6 +169,15 @@ def cmd_build_public_api(args: argparse.Namespace) -> int:
     extra_roots = [Path(item) for item in args.extra_facts]
     if extra_roots:
         facts.extend(load_extra_fact_files(extra_roots))
+    if not args.skip_raw_sources:
+        raw_facts, raw_summary = load_raw_source_facts(
+            Path(args.raw_dir),
+            max_records_per_source=args.raw_max_records or 0,
+            max_files_per_source=args.raw_max_files,
+        )
+        facts.extend(raw_facts)
+        print(f"raw_source_facts={len(raw_facts)}")
+        print(f"raw_source_summary={raw_summary}")
     facts = dedupe_facts(facts)
 
     first_pass = build_dataset(facts, args.dataset_version)
@@ -266,6 +276,10 @@ def build_parser() -> argparse.ArgumentParser:
     public_api.add_argument("--dose-rule-facts", default=str(DEFAULT_DOSE_RULE_FACTS))
     public_api.add_argument("--optional-facts", default=str(DEFAULT_OPTIONAL_FACTS), help="Cached public API EvidenceFact JSON")
     public_api.add_argument("--extra-facts", action="append", default=["data/optional", "data/overrides"], help="Extra EvidenceFact JSON file or directory; repeatable")
+    public_api.add_argument("--raw-dir", default="data/raw", help="Directory containing downloaded bulk source files")
+    public_api.add_argument("--raw-max-records", type=int, default=100000, help="Max records parsed per local bulk source; 0 means no cap")
+    public_api.add_argument("--raw-max-files", type=int, default=0, help="Max files parsed per local bulk source; 0 means all files")
+    public_api.add_argument("--skip-raw-sources", action="store_true", help="Do not parse locally downloaded bulk source files")
     public_api.add_argument("--public-sources", default="rxnav,chembl,dailymed,openfda_label", help="Comma-separated public API sources")
     public_api.add_argument("--max-public-terms", type=int, default=120, help="Max terms selected from the fused seed for API enrichment")
     public_api.add_argument("--public-limit", type=int, default=2, help="Per-source result limit per term")

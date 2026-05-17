@@ -28,6 +28,7 @@ from metabolic_safety_etl.dose_rules import extract_dose_rule_facts  # noqa: E40
 from metabolic_safety_etl.export import write_json, write_mobile_seed_files, write_sqlite  # noqa: E402
 from metabolic_safety_etl.fusion import build_dataset, load_facts  # noqa: E402
 from metabolic_safety_etl.io import read_json  # noqa: E402
+from metabolic_safety_etl.raw_sources import load_raw_source_facts  # noqa: E402
 from metabolic_safety_etl.source_catalog import source_status_dicts  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -327,7 +328,7 @@ class Handler(SimpleHTTPRequestHandler):
         for source in source_status_dicts():
             row = dict(source)
             row["is_direct_public"] = row["key"] in direct_keys
-            row["can_update"] = row["status"] in {"connected_api", "connected_local_csv", "connected_local_json"}
+            row["can_update"] = row["status"] in {"connected_api", "connected_api_and_local_bulk", "connected_local_csv", "connected_local_json", "connected_local_bulk"}
             row["can_bulk_update"] = row["key"] in BULK_SOURCE_CONFIG
             row["bulk_update_label"] = BULK_SOURCE_CONFIG.get(row["key"], {}).get("label")
             row["bulk_update_mode"] = BULK_SOURCE_CONFIG.get(row["key"], {}).get("mode")
@@ -966,7 +967,11 @@ def rebuild_seed_dataset(progress=None) -> dict:
     step(55, "合并已拉取的公开源候选事实...")
     if OPTIONAL_FACTS.exists():
         facts.extend(load_facts(read_json(OPTIONAL_FACTS)))
-    step(65, f"执行多源融合：{len(facts)} 条证据事实...")
+    step(60, "抽取已下载的 openFDA/DailyMed/ChEMBL/FooDrugs/OnSIDES/PharmGKB 本地全量包...")
+    raw_facts, raw_summary = load_raw_source_facts(RAW_DIR, max_records_per_source=100000, max_files_per_source=0)
+    facts.extend(raw_facts)
+    step(65, f"本地全量包候选已融合：{len(raw_facts)} 条；{raw_summary}")
+    step(68, f"执行多源融合：{len(facts)} 条证据事实...")
     dataset = build_dataset(facts, DATASET_VERSION)
     step(78, "写入 JSON 种子文件...")
     write_mobile_seed_files(BUILD, dataset)
