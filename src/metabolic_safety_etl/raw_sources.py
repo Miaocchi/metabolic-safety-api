@@ -6,11 +6,16 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import shutil
 import tarfile
+import tempfile
 import xml.etree.ElementTree as ET
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
 import zipfile
 from typing import Any, Iterable, Iterator
 
+from .adapters.label_bulk import fetch_dailymed_label_manifest, fetch_openfda_label_manifest
 from .io import read_json
 from .schemas import EvidenceFact, now_utc, slugify, stable_hash
 
@@ -653,3 +658,208 @@ def dedupe_fact_objects(facts: Iterable[EvidenceFact]) -> list[EvidenceFact]:
     for fact in facts:
         by_id[fact.fact_id] = fact
     return [by_id[key] for key in sorted(by_id)]
+REMOTE_RAW_SOURCE_KEYS = ("openfda_label", "dailymed", "chembl", "foodrugs", "onsides", "pharmgkb")
+PHARMGKB_BULK_FILES = (
+    "clinicalAnnotations.zip",
+    "clinicalVariants.zip",
+    "variantAnnotations.zip",
+    "automatedAnnotations.zip",
+    "drugLabels.zip",
+    "guidelineAnnotations.zip",
+    "relationships.zip",
+    "drugs.zip",
+    "genes.zip",
+    "variants.zip",
+    "chemicals.zip",
+    "diseases.zip",
+    "phenotypes.zip",
+)
+
+
+def load_remote_raw_source_facts(
+    source_keys: Iterable[str],
+    temp_dir: Path | None = None,
+    max_records_per_source: int = 100_000,
+    max_parts_per_source: int = 0,
+) -> tuple[list[EvidenceFact], dict[str, dict[str, Any]]]:
+    """Download remote bulk packages one part at a time, parse, then delete.
+
+    This keeps the runner from needing a persistent raw mirror. The output is
+    still compact EvidenceFact rows, not raw label/XML redistribution.
+    """
+    requested = [key.strip() for key in source_keys if key and key.strip()]
+    if not requested:
+        requested = list(REMOTE_RAW_SOURCE_KEYS)
+    root = Path(temp_dir) if temp_dir else Path(tempfile.mkdtemp(prefix="metabolic_raw_stream_"))
+    root.mkdir(parents=True, exist_ok=True)
+    all_facts: list[EvidenceFact] = []
+    summary: dict[str, dict[str, Any]] = {}
+    try:
+        for key in requested:
+            if key not in REMOTE_RAW_SOURCE_KEYS:
+                summary[key] = {"facts": 0, "status": "unsupported"}
+                continue
+            try:
+                facts, info = stream_remote_source(key, root / key, max_records_per_source, max_parts_per_source)
+                all_facts.extend(facts)
+                summary[key] = info
+            except Exception as exc:
+                summary[key] = {"facts": 0, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if temp_dir is None:
+            shutil.rmtree(root, ignore_errors=True)
+    return dedupe_fact_objects(all_facts), summary
+
+
+def stream_remote_source(key: str, work_dir: Path, max_records: int = 100_000, max_parts: int = 0) -> tuple[list[EvidenceFact], dict[str, Any]]:
+    manifest = fetch_remote_bulk_manifest(key)
+    parts = manifest.get("parts") or []
+    if max_parts:
+        parts = parts[:max_parts]
+    facts: list[EvidenceFact] = []
+    downloaded = 0
+    errors = 0
+    for index, part in enumerate(parts, start=1):
+        url = part.get("url")
+        if not url:
+            errors += 1
+            continue
+        part_dir = work_dir / f"part_{index:04d}"
+        shutil.rmtree(part_dir, ignore_errors=True)
+        part_dir.mkdir(parents=True, exist_ok=True)
+        target = part_dir / safe_filename(part.get("name") or url)
+        try:
+            print(f"remote_raw_download={key} part={index}/{len(parts)} name={target.name}", flush=True)
+            download_url(url, target)
+            downloaded += 1
+            remaining = 0 if not max_records else max(max_records - len(facts), 1)
+            facts.extend(load_downloaded_part_facts(key, part_dir, remaining))
+            print(f"remote_raw_progress={key} part={index}/{len(parts)} facts={len(facts)}", flush=True)
+            if max_records and len(facts) >= max_records:
+                break
+        except Exception as exc:
+            errors += 1
+            print(f"remote_raw_error={key} part={index} error={type(exc).__name__}: {exc}", flush=True)
+        finally:
+            shutil.rmtree(part_dir, ignore_errors=True)
+    info = {
+        "facts": len(facts),
+        "status": "loaded" if facts else "no_facts",
+        "remote_parts": len(parts),
+        "downloaded_parts": downloaded,
+        "errors": errors,
+        "source_url": manifest.get("source_url"),
+        "total_records": manifest.get("total_records"),
+        "total_size_mb": manifest.get("total_size_mb"),
+    }
+    return dedupe_fact_objects(facts), info
+
+
+def load_downloaded_part_facts(key: str, part_dir: Path, max_records: int = 100_000) -> list[EvidenceFact]:
+    if key == "openfda_label":
+        return load_openfda_bulk_facts(part_dir, max_records=max_records)
+    if key == "dailymed":
+        return load_dailymed_bulk_facts(part_dir, max_records=max_records)
+    if key == "chembl":
+        return load_chembl_bulk_facts(part_dir, max_records=max_records)
+    if key == "foodrugs":
+        return load_foodrugs_bulk_facts(part_dir, max_records=max_records)
+    if key == "onsides":
+        return load_onsides_bulk_facts(part_dir, max_records=max_records)
+    if key == "pharmgkb":
+        return load_pharmgkb_bulk_facts(part_dir, max_records=max_records)
+    return []
+
+
+def fetch_remote_bulk_manifest(key: str) -> dict[str, Any]:
+    if key == "openfda_label":
+        return fetch_openfda_label_manifest()
+    if key == "dailymed":
+        return fetch_dailymed_label_manifest()
+    if key == "chembl":
+        return fetch_chembl_bulk_manifest()
+    if key == "foodrugs":
+        return fetch_zenodo_manifest("8192515", "foodrugs")
+    if key == "onsides":
+        return fetch_github_release_manifest("tatonetti-lab", "onsides", "onsides")
+    if key == "pharmgkb":
+        return fetch_pharmgkb_bulk_manifest()
+    raise ValueError(f"unsupported remote raw source: {key}")
+
+
+def fetch_chembl_bulk_manifest() -> dict[str, Any]:
+    url = "https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/latest/"
+    with urlopen(Request(url, headers={"User-Agent": "metabolic-safety-etl"}), timeout=45) as response:
+        html = response.read().decode("utf-8", "replace")
+    names = sorted(set(re.findall(r'href="([^"]+)"', html)))
+    parts = []
+    for name in names:
+        if re.search(r"chembl_.*_sqlite\.tar\.gz$", name):
+            parts.append({"name": name, "url": urljoin(url, name), "records": None, "size_mb": None})
+    return {"source": "chembl", "source_url": url, "parts": parts, "total_records": None, "total_size_mb": None}
+
+
+def fetch_zenodo_manifest(record_id: str, source: str) -> dict[str, Any]:
+    url = f"https://zenodo.org/api/records/{record_id}"
+    with urlopen(Request(url, headers={"User-Agent": "metabolic-safety-etl"}), timeout=45) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    parts = []
+    for item in payload.get("files", []) or []:
+        links = item.get("links") or {}
+        file_url = links.get("self") or links.get("download")
+        if not file_url:
+            continue
+        size = item.get("size") or 0
+        parts.append({"name": item.get("key") or Path(urlparse(file_url).path).name, "url": file_url, "records": None, "size_mb": round(size / 1024 / 1024, 2) if size else None})
+    return {"source": source, "source_url": url, "parts": parts, "total_records": None, "total_size_mb": sum(part.get("size_mb") or 0 for part in parts)}
+
+
+def fetch_github_release_manifest(owner_repo: str, repo_name: str, source: str) -> dict[str, Any]:
+    api_url = f"https://api.github.com/repos/{owner_repo}/releases/latest"
+    try:
+        with urlopen(Request(api_url, headers={"User-Agent": "metabolic-safety-etl"}), timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        parts = [
+            {"name": asset.get("name"), "url": asset.get("browser_download_url"), "records": None, "size_mb": round((asset.get("size") or 0) / 1024 / 1024, 2)}
+            for asset in payload.get("assets", []) or []
+            if asset.get("browser_download_url")
+        ]
+        if parts:
+            return {"source": source, "source_url": api_url, "parts": parts, "total_records": None, "total_size_mb": sum(part.get("size_mb") or 0 for part in parts)}
+    except Exception:
+        pass
+    branch = "main"
+    try:
+        repo_api = f"https://api.github.com/repos/{owner_repo}"
+        with urlopen(Request(repo_api, headers={"User-Agent": "metabolic-safety-etl"}), timeout=20) as response:
+            branch = json.loads(response.read().decode("utf-8")).get("default_branch") or branch
+    except Exception:
+        pass
+    archive_url = f"https://github.com/{owner_repo}/archive/refs/heads/{branch}.zip"
+    return {"source": source, "source_url": f"https://github.com/{owner_repo}", "parts": [{"name": f"{repo_name}-{branch}.zip", "url": archive_url, "records": None, "size_mb": None}], "total_records": None, "total_size_mb": None}
+
+
+def fetch_pharmgkb_bulk_manifest() -> dict[str, Any]:
+    base = "https://api.pharmgkb.org/v1/download/file/data/"
+    parts = []
+    for name in PHARMGKB_BULK_FILES:
+        parts.append({"name": name, "url": base + name, "records": None, "size_mb": None})
+    return {"source": "pharmgkb", "source_url": base, "parts": parts, "total_records": None, "total_size_mb": None}
+
+
+def download_url(url: str, target: Path) -> None:
+    tmp = target.with_name(target.name + ".part")
+    req = Request(url, headers={"User-Agent": "metabolic-safety-etl"})
+    with urlopen(req, timeout=90) as response, tmp.open("wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+    tmp.replace(target)
+
+
+def safe_filename(value: str) -> str:
+    name = Path(urlparse(str(value)).path).name if "/" in str(value) else str(value)
+    name = re.sub(r"[^A-Za-z0-9._+\-()\[\] ]+", "_", name).strip(" .")
+    return name or "download.bin"
