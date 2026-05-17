@@ -43,18 +43,18 @@ jobs:
       - name: Test ETL
         run: python -m unittest discover -s tests
 
-      - name: Build fused seed database
+      - name: Build fused seed database and static API
         shell: bash
         run: |
           set -euo pipefail
-          if find data/raw/ddinter -type f -name '*.csv' 2>/dev/null | grep -q .; then
-            python -m metabolic_safety_etl.cli import-ddinter --input-dir data/raw/ddinter --out build
-          else
-            python -m metabolic_safety_etl.cli demo --out build
-          fi
-
-      - name: Export static JSON API
-        run: python -m metabolic_safety_etl.cli export-static-api --input-dir build --out public/api
+          python -m metabolic_safety_etl.cli build-public-api \
+            --ddinter-dir data/raw/ddinter \
+            --out build \
+            --api-out public/api \
+            --max-public-terms 120 \
+            --public-limit 2 \
+            --public-workers 8 \
+            --psychonautwiki-pages 3
 
       - name: Write Pages landing page
         shell: bash

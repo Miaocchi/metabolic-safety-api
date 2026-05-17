@@ -187,6 +187,24 @@ python -m metabolic_safety_etl.cli export-static-api --input-dir build --out pub
 Automated publishing is defined in `.github/workflows/build-data-api.yml`. After enabling GitHub Pages with the GitHub Actions source, the workflow builds `public/api` and deploys it. In the local app settings, configure the remote source at the `/api` level, for example `https://<user>.github.io/<repo>/api`. See `docs/REMOTE_STATIC_API.md`.
 
 
+### GitHub Pages 多源融合构建
+
+当前 GitHub Pages 工作流不再只导出本地 DDInter；它会运行 `build-public-api`，把以下可直接使用的非商业源合并为远程静态 API：
+
+- 本地 DDInter 2.0 CSV、中文别名、补充事实、剂量规则。
+- 已缓存的 `data/optional/*.json` 候选事实。
+- RxNav / RxNorm、ChEMBL、DailyMed SPL、openFDA Drug Label 的公开 API enrichment。
+- PsychonautWiki GraphQL 的 ROA/剂量/持续时间候选数据。
+
+本地小规模验证：
+
+```powershell
+$env:PYTHONPATH='src'
+python -m metabolic_safety_etl.cli build-public-api --out build --api-out public/api --max-public-terms 20 --public-limit 1 --psychonautwiki-pages 1
+```
+
+FooDrugs、OnSIDES、PharmGKB/ClinPGx 这类大包源先下载到工作站并转换为 EvidenceFact JSON 后，放入 `data/optional` 即可被同一构建命令融合。商业授权源不会自动接入。
+
 ## Cloudflare Pages Remote Static API
 
 Cloudflare Pages is also supported for the same static JSON API. Use `.github/workflows/build-data-api-cloudflare-pages.yml`, set GitHub secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, and optionally set repository variable `CLOUDFLARE_PAGES_PROJECT`. The client remote URL should be `https://<project>.pages.dev/api`. See `docs/CLOUDFLARE_PAGES_API.md`.

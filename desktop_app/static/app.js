@@ -679,8 +679,8 @@ const categoryEffectSummaries = {
   Dissociative: "\u89e3\u79bb\u7c7b\u4f5c\u7528\uff1b\u53ef\u80fd\u6539\u53d8\u611f\u77e5\u3001\u8fd0\u52a8\u534f\u8c03\u548c\u610f\u8bc6\u72b6\u6001\u3002",
   "Supplement/Food": "\u98df\u7269/\u8865\u5145\u5242\uff1b\u91cd\u70b9\u770b\u5176\u5bf9\u4ee3\u8c22\u9176\u3001\u8f6c\u8fd0\u4f53\u548c\u5438\u6536\u7684\u5f71\u54cd\u3002",
   Food: "\u98df\u7269\u6e90\uff1b\u91cd\u70b9\u770b\u836f\u98df\u76f8\u4e92\u4f5c\u7528\u548c\u5438\u6536/\u4ee3\u8c22\u5f71\u54cd\u3002",
-  DrugLabel: "\u76d1\u7ba1\u6807\u7b7e\u836f\u54c1\uff1b\u5177\u4f53\u4f5c\u7528\u4ee5\u8bf4\u660e\u4e66/\u6807\u7b7e\u5b57\u6bb5\u4e3a\u51c6\u3002",
-  Drug: "\u836f\u7269\uff1b\u5f53\u524d\u6838\u5fc3\u5e93\u5c1a\u65e0\u6807\u51c6\u5316\u836f\u6548\u5b57\u6bb5\u65f6\uff0c\u5148\u663e\u793a\u7c7b\u522b\u3001\u836f\u4ee3\u548c\u4ee3\u8c22\u6807\u7b7e\u3002",
+  DrugLabel: null,
+  Drug: null,
 };
 
 const modelTypeLabels = {
@@ -694,6 +694,20 @@ function findEffectProfile(substance = {}) {
   return Object.values(substanceEffectProfiles).find((profile) => profile.terms.some((term) => haystack.includes(String(term).toLowerCase())));
 }
 
+
+function sentenceText(text) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  return /[。！？.!?]$/.test(value) ? value : `${value}。`;
+}
+
+function effectDisplay(substance = {}) {
+  const profile = findEffectProfile(substance);
+  if (profile?.effect) return { text: profile.effect, profile, known: true };
+  const categoryText = categoryEffectSummaries[substance.category];
+  if (categoryText) return { text: categoryText, profile: null, known: true };
+  return { text: "暂无", profile: null, known: false };
+}
 function formatCypTag(tag) {
   return String(tag || "")
     .replace(/_substrate$/i, " \u5e95\u7269")
@@ -711,11 +725,10 @@ function pkSummary(substance = {}) {
 }
 
 function substanceEffectSummary(substance = {}, params = null) {
-  const profile = findEffectProfile(substance);
-  const category = categoryEffectSummaries[substance.category] || `\u7c7b\u522b\uff1a${categoryLabel(substance.category)}\u3002`;
+  const effect = effectDisplay(substance);
   const lines = [];
-  lines.push(`\u4f5c\u7528\uff1a${profile?.effect || category}`);
-  if (profile?.mechanism) lines.push(`\u673a\u5236\uff1a${profile.mechanism}`);
+  lines.push(`\u4f5c\u7528\uff1a${sentenceText(effect.text)}`);
+  if (effect.profile?.mechanism) lines.push(`\u673a\u5236\uff1a${sentenceText(effect.profile.mechanism)}`);
   const cyp = (substance.cyp_tags || []).map(formatCypTag).filter(Boolean);
   if (cyp.length) lines.push(`\u4ee3\u8c22/\u9176\uff1a${cyp.join("\uff0c")}\u3002`);
   const pk = pkSummary(substance);
@@ -725,9 +738,7 @@ function substanceEffectSummary(substance = {}, params = null) {
 }
 
 function compactSubstanceEffect(substance = {}) {
-  const profile = findEffectProfile(substance);
-  if (profile?.effect) return profile.effect;
-  return categoryEffectSummaries[substance.category] || categoryLabel(substance.category);
+  return effectDisplay(substance).text;
 }
 
 function consumerSubstanceEffect(substance = {}) {
@@ -1184,7 +1195,7 @@ function renderJournal() {
     card.className = "journal-card";
     const time = new Date(entry.timestamp).toLocaleString();
     const ethanolLine = formatEthanolEntry(entry);
-    const effectLine = state.advancedMode ? substanceEffectSummary(substance, params) : consumerSubstanceEffect(substance);
+    const effectLine = state.advancedMode ? substanceEffectSummary(substance) : consumerSubstanceEffect(substance);
     const metrics = exposureMetricsForEntry(entry, params);
     const warningLine = params.warnings?.length ? params.warnings.join("\u3002") : "";
     card.innerHTML = `

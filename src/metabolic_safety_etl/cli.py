@@ -14,6 +14,14 @@ from .adapters.rxnav import fetch_rxnav_facts
 from .export import write_json, write_mobile_seed_files, write_sqlite
 from .fusion import build_dataset, load_facts
 from .io import read_json
+from .public_enrichment import (
+    candidate_terms_from_dataset,
+    dedupe_facts,
+    fetch_psychonautwiki_enrichment_facts,
+    fetch_public_enrichment_facts,
+    load_extra_fact_files,
+    load_seed_facts,
+)
 from .source_catalog import source_status_dicts
 from .static_api import export_static_api
 
@@ -143,6 +151,64 @@ def cmd_export_static_api(args: argparse.Namespace) -> int:
     print(f"out={Path(args.out).resolve()}")
     return 0
 
+def cmd_build_public_api(args: argparse.Namespace) -> int:
+    supplement_paths = [
+        Path(args.supplement_facts),
+        Path(args.dose_rule_facts),
+        Path(args.optional_facts),
+    ]
+    facts, source_files = load_seed_facts(
+        ddinter_dir=Path(args.ddinter_dir),
+        fixture_path=DEFAULT_FIXTURE,
+        zh_aliases=Path(args.zh_aliases) if args.zh_aliases else None,
+        supplement_facts=supplement_paths,
+        max_interactions=args.max_interactions,
+    )
+
+    extra_roots = [Path(item) for item in args.extra_facts]
+    if extra_roots:
+        facts.extend(load_extra_fact_files(extra_roots))
+    facts = dedupe_facts(facts)
+
+    first_pass = build_dataset(facts, args.dataset_version)
+    terms = candidate_terms_from_dataset(first_pass, args.max_public_terms)
+    print(f"seed_source_files={len(source_files)}")
+    print(f"seed_facts={len(facts)}")
+    print(f"public_candidate_terms={len(terms)}")
+
+    enrichment_facts = []
+    public_counts: dict[str, int] = {}
+    if args.skip_network:
+        print("public_enrichment=skipped")
+    else:
+        enabled_sources = [item.strip() for item in args.public_sources.split(",") if item.strip()]
+        if terms and enabled_sources:
+            public_batch, public_counts = fetch_public_enrichment_facts(
+                terms=terms,
+                per_source_limit=args.public_limit,
+                timeout=args.public_timeout,
+                workers=args.public_workers,
+                enabled_sources=enabled_sources,
+            )
+            enrichment_facts.extend(public_batch)
+        if args.psychonautwiki_pages > 0:
+            enrichment_facts.extend(fetch_psychonautwiki_enrichment_facts(args.psychonautwiki_pages, args.psychonautwiki_page_size))
+
+    all_facts = dedupe_facts([*facts, *enrichment_facts])
+    dataset = build_dataset(all_facts, args.dataset_version)
+    out_dir = Path(args.out)
+    write_mobile_seed_files(out_dir, dataset)
+    write_sqlite(out_dir / "app_seed.sqlite", dataset)
+    manifest = export_static_api(out_dir, Path(args.api_out))
+    print_build_summary(dataset, out_dir)
+    print(f"public_enrichment_facts={len(enrichment_facts)}")
+    if public_counts:
+        print(f"public_enrichment_counts={public_counts}")
+    print(f"api_out={Path(args.api_out).resolve()}")
+    print(f"api_counts={manifest.get('counts', {})}")
+    return 0
+
+
 def write_facts(facts, out_path: Path) -> int:
     write_json(out_path, [fact.to_dict() for fact in facts])
     print(f"facts={len(facts)}")
@@ -189,6 +255,26 @@ def build_parser() -> argparse.ArgumentParser:
     import_ddinter.add_argument("--dose-rule-facts", default=str(DEFAULT_DOSE_RULE_FACTS), help="Optional dose rule EvidenceFact JSON")
     import_ddinter.add_argument("--optional-facts", default=str(DEFAULT_OPTIONAL_FACTS), help="Optional public API EvidenceFact JSON cache")
     import_ddinter.set_defaults(func=cmd_import_ddinter)
+
+    public_api = sub.add_parser("build-public-api", help="Build and export a fused static API with all feasible open/non-commercial sources")
+    public_api.add_argument("--ddinter-dir", default="data/raw/ddinter", help="Directory containing DDInter CSV files")
+    public_api.add_argument("--out", default="build", help="Output directory for mobile seed files")
+    public_api.add_argument("--api-out", default="public/api", help="Output directory for the static JSON API")
+    public_api.add_argument("--max-interactions", type=int, default=None, help="Optional DDInter cap for fast tests")
+    public_api.add_argument("--zh-aliases", default="data/overrides/drug_zh_aliases.csv", help="Optional CSV with name_en,name_zh,aliases")
+    public_api.add_argument("--supplement-facts", default="data/overrides/supplemental_facts.json")
+    public_api.add_argument("--dose-rule-facts", default=str(DEFAULT_DOSE_RULE_FACTS))
+    public_api.add_argument("--optional-facts", default=str(DEFAULT_OPTIONAL_FACTS), help="Cached public API EvidenceFact JSON")
+    public_api.add_argument("--extra-facts", action="append", default=["data/optional", "data/overrides"], help="Extra EvidenceFact JSON file or directory; repeatable")
+    public_api.add_argument("--public-sources", default="rxnav,chembl,dailymed,openfda_label", help="Comma-separated public API sources")
+    public_api.add_argument("--max-public-terms", type=int, default=120, help="Max terms selected from the fused seed for API enrichment")
+    public_api.add_argument("--public-limit", type=int, default=2, help="Per-source result limit per term")
+    public_api.add_argument("--public-timeout", type=int, default=20, help="HTTP timeout seconds for public APIs")
+    public_api.add_argument("--public-workers", type=int, default=8, help="Parallel public API workers")
+    public_api.add_argument("--psychonautwiki-pages", type=int, default=3, help="PsychonautWiki pages to fetch; 0 disables")
+    public_api.add_argument("--psychonautwiki-page-size", type=int, default=100)
+    public_api.add_argument("--skip-network", action="store_true", help="Build from local files only")
+    public_api.set_defaults(func=cmd_build_public_api)
 
     add_term_limit_out(sub, "fetch-openfda", "Fetch source_text facts from openFDA labels", cmd_fetch_openfda)
     add_term_limit_out(sub, "fetch-dailymed", "Fetch DailyMed SPL metadata facts", cmd_fetch_dailymed)

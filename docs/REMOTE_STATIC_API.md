@@ -5,9 +5,10 @@ Goal: keep the desktop/mobile client lightweight. The local app keeps the core s
 ## Build Flow
 
 1. GitHub Actions runs `Build Static Drug API` on push, schedule, or manual dispatch.
-2. The workflow builds the fused seed database. It prefers repository `data/raw/ddinter/*.csv`; if those files are absent it falls back to the bundled fixture dataset so the pipeline remains testable.
-3. `python -m metabolic_safety_etl.cli export-static-api --input-dir build --out public/api` converts the fused seed JSON into static JSON files that GitHub Pages can host.
-4. `actions/deploy-pages` publishes `public/` to GitHub Pages.
+2. The workflow runs `build-public-api`, which starts from DDInter/local override facts, then enriches selected substance terms through every directly usable open API adapter: RxNav, ChEMBL, DailyMed, openFDA label, and PsychonautWiki.
+3. Optional normalized fact files under `data/optional` and `data/overrides` are merged in the same pass, so local exports from FooDrugs, OnSIDES, PharmGKB/ClinPGx, or other open datasets can be added without changing the mobile client.
+4. `build-public-api` writes both mobile seed files and the GitHub Pages static JSON API under `public/api`.
+5. `actions/deploy-pages` publishes `public/` to GitHub Pages.
 
 ## Static API Paths
 
@@ -31,4 +32,4 @@ Remote fallback is off by default. When enabled, the browser requests remote sta
 
 ## Large Label Sources
 
-openFDA and DailyMed bulk label archives are too large to keep on the client. They should be processed by a workstation or GitHub Actions into structured, lightweight `substances`, `interactions`, `dose_rules`, and evidence summaries before publication.
+openFDA and DailyMed bulk label archives are too large to keep on the client. The hosted build therefore uses their public search APIs for high-value candidate terms by default. Full bulk archives should be processed by a workstation into normalized EvidenceFact JSON, then placed under `data/optional` for fusion and publication.
