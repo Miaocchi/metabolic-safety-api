@@ -658,13 +658,18 @@ async function scheduleRemoteSubstanceImport(query) {
   if (token !== state.remoteImportToken || state.remoteLastImportQuery !== normalized) return;
   try {
     const matches = await searchRemoteSubstances(normalized, 8);
-    let added = 0;
+    let changed = 0;
     for (const match of matches.slice(0, 8)) {
-      if (state.substanceById.has(match.id)) continue;
+      const existing = state.substanceById.get(match.id);
+      const hasRemoteEffects = normalizeRemoteList(existing?.remote_evidence?.drug_effects).length > 0;
+      const hasRemotePk = normalizeRemoteList(existing?.remote_evidence?.pharmacokinetics).length > 0;
+      const hasRemoteEnzymes = normalizeRemoteList(existing?.remote_evidence?.enzyme_relations).length > 0;
+      if (existing && hasRemoteEffects && hasRemotePk && hasRemoteEnzymes) continue;
       const detail = await addRemoteSubstanceById(match.id);
-      if (detail) added += 1;
+      if (detail) changed += 1;
     }
-    if (added && ($("substanceFilter")?.value || "").trim() === normalized) renderSubstanceOptions();
+    if (changed && ($("substanceFilter")?.value || "").trim() === normalized) renderSubstanceOptions();
+    if (changed) renderSelectedSubstanceInfo();
   } catch (error) {
     setRemoteApiStatus(`\u8fdc\u7a0b\u68c0\u7d22\u5931\u8d25\uff1a${error.message || error}`, "error");
   }
@@ -1256,12 +1261,12 @@ function remotePkSummary(substance = {}) {
   const rows = normalizeRemoteList(substance.remote_evidence?.pharmacokinetics);
   const halfLife = substance.base_half_life || rows.find((row) => row.half_life_hours !== null && row.half_life_hours !== undefined)?.half_life_hours;
   const parts = [];
-  if (halfLife) parts.push(`??? ${Number(halfLife).toFixed(1)}h`);
+  if (halfLife) parts.push(`\u534a\u8870\u671f ${Number(halfLife).toFixed(1)}h`);
   const clearance = rows.find((row) => row.clearance)?.clearance;
-  if (clearance) parts.push(`??? ${clearance}`);
+  if (clearance) parts.push(`\u6e05\u9664\u7387 ${clearance}`);
   const vd = rows.find((row) => row.volume_distribution)?.volume_distribution;
   if (vd) parts.push(`Vd ${vd}`);
-  return parts.join(" ? ");
+  return parts.join(" \u00b7 ");
 }
 
 function substanceCypTags(substance = {}) {
@@ -1273,9 +1278,19 @@ function substanceCypTags(substance = {}) {
 function effectDisplay(substance = {}) {
   const profile = findEffectProfile(substance);
   if (profile?.effect) return { text: profile.effect, profile, known: true };
+  const remote = primaryRemoteDrugEffect(substance);
+  if (remote) {
+    const text = remote.effectText || remote.mechanism || (remote.target ? `\u9776\u70b9\uff1a${remote.target}` : "\u5df2\u83b7\u53d6\u8fdc\u7a0b\u836f\u6548\u8bc1\u636e");
+    return {
+      text,
+      profile: { mechanism: remote.mechanism || "", target: remote.target || "", source: remote.row?.source_name || "" },
+      known: true,
+      remote,
+    };
+  }
   const categoryText = categoryEffectSummaries[substance.category];
   if (categoryText) return { text: categoryText, profile: null, known: true };
-  return { text: "暂无", profile: null, known: false };
+  return { text: "\u6682\u65e0", profile: null, known: false };
 }
 function formatCypTag(tag) {
   return String(tag || "")
@@ -1290,6 +1305,8 @@ function pkSummary(substance = {}) {
   if (substance.base_half_life) parts.push(`\u534a\u8870\u671f ${Number(substance.base_half_life).toFixed(1)}h`);
   if (substance.base_onset) parts.push(`\u8d77\u6548 ${formatNumber(substance.base_onset, 0)}min`);
   if (substance.base_duration) parts.push(`\u6301\u7eed ${formatNumber(substance.base_duration, 0)}min`);
+  const remotePk = remotePkSummary(substance);
+  if (remotePk && !parts.join(" ").includes(remotePk)) parts.push(remotePk);
   return parts.join(" \u00b7 ");
 }
 
@@ -1298,6 +1315,8 @@ function substanceEffectSummary(substance = {}, params = null) {
   const lines = [];
   lines.push(`\u4f5c\u7528\uff1a${sentenceText(effect.text)}`);
   if (effect.profile?.mechanism) lines.push(`\u673a\u5236\uff1a${sentenceText(effect.profile.mechanism)}`);
+  if (effect.remote?.target) lines.push(`\u9776\u70b9/\u4f5c\u7528\uff1a${sentenceText(effect.remote.target)}`);
+  if (effect.remote?.row?.source_name) lines.push(`\u6765\u6e90\uff1a${sentenceText(effect.remote.row.source_name)}`);
   const cyp = (substance.cyp_tags || []).map(formatCypTag).filter(Boolean);
   if (cyp.length) lines.push(`\u4ee3\u8c22/\u9176\uff1a${cyp.join("\uff0c")}\u3002`);
   const pk = pkSummary(substance);

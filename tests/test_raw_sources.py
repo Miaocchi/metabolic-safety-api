@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import shutil
 import tempfile
 from pathlib import Path
@@ -6,7 +7,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from metabolic_safety_etl.raw_sources import dailymed_xml_facts, load_dailymed_bulk_facts, load_openfda_bulk_facts, load_remote_raw_source_facts
+from metabolic_safety_etl.raw_sources import dailymed_xml_facts, load_chembl_bulk_facts, load_dailymed_bulk_facts, load_openfda_bulk_facts, load_remote_raw_source_facts
 
 
 class RawSourceAdapterTests(unittest.TestCase):
@@ -25,6 +26,8 @@ class RawSourceAdapterTests(unittest.TestCase):
                             "rxcui": ["123"],
                         },
                         "pharmacokinetics": ["The terminal half-life is 2 to 4 hours. Metabolism is primarily by CYP3A4."],
+                        "indications_and_usage": ["Example Drug is indicated for attention symptoms."],
+                        "mechanism_of_action": ["Example Drug blocks norepinephrine transporters."],
                         "dosage_and_administration": ["The maximum recommended dosage is 20 mg per day."],
                         "overdosage": ["OVERDOSAGE may cause coma and respiratory depression."],
                     }
@@ -39,6 +42,7 @@ class RawSourceAdapterTests(unittest.TestCase):
             pk = next(f for f in facts if f.fact_type == "pharmacokinetics")
             self.assertEqual(pk.claim["half_life_hours"], 3.0)
             self.assertTrue(any(f.fact_type == "enzyme_relation" and f.claim["tag"] == "CYP3A4_substrate" for f in facts))
+            self.assertTrue(any(f.fact_type == "drug_effect" and "norepinephrine" in str(f.claim) for f in facts))
             self.assertTrue(any(f.fact_type == "dose_candidate" and f.claim["candidate_kind"] == "max_daily_candidate" for f in facts))
             self.assertTrue(any(f.fact_type == "overdose_warning" for f in facts))
 
@@ -50,6 +54,9 @@ class RawSourceAdapterTests(unittest.TestCase):
           <component><structuredBody><component><section>
             <title>CLINICAL PHARMACOLOGY</title>
             <text>The half-life is 30 minutes. It is an inhibitor of CYP2D6.</text>
+          </section></component><component><section>
+            <title>MECHANISM OF ACTION</title>
+            <text>Example DailyMed Drug antagonizes a receptor.</text>
           </section></component></structuredBody></component>
         </document>
         '''
@@ -60,6 +67,7 @@ class RawSourceAdapterTests(unittest.TestCase):
         pk = next(f for f in facts if f.fact_type == "pharmacokinetics")
         self.assertEqual(pk.claim["half_life_hours"], 0.5)
         self.assertTrue(any(f.fact_type == "enzyme_relation" and f.claim["tag"] == "CYP2D6_inhibitor" for f in facts))
+        self.assertTrue(any(f.fact_type == "drug_effect" and "antagonizes" in str(f.claim) for f in facts))
 
 
     def test_dailymed_bulk_reads_nested_zip_xml(self):
@@ -93,6 +101,30 @@ class RawSourceAdapterTests(unittest.TestCase):
             self.assertTrue(any(f.fact_type == "overdose_warning" for f in facts))
 
 
+
+
+    def test_chembl_bulk_extracts_drug_mechanism(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            source = root / "chembl"
+            source.mkdir()
+            db_path = source / "chembl.sqlite"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE molecule_dictionary (molregno INTEGER, chembl_id TEXT, pref_name TEXT, molecule_type TEXT)")
+                conn.execute("CREATE TABLE compound_properties (molregno INTEGER, alogp TEXT, psa TEXT, full_mwt TEXT)")
+                conn.execute("CREATE TABLE drug_mechanism (molregno INTEGER, tid INTEGER, mechanism_of_action TEXT, action_type TEXT)")
+                conn.execute("CREATE TABLE target_dictionary (tid INTEGER, pref_name TEXT)")
+                conn.execute("INSERT INTO molecule_dictionary VALUES (1, 'CHEMBL1', 'Atomoxetine', 'Small molecule')")
+                conn.execute("INSERT INTO compound_properties VALUES (1, '2.4', '30', '255')")
+                conn.execute("INSERT INTO target_dictionary VALUES (10, 'Norepinephrine transporter')")
+                conn.execute("INSERT INTO drug_mechanism VALUES (1, 10, 'Norepinephrine uptake inhibition', 'INHIBITOR')")
+
+            facts = load_chembl_bulk_facts(source)
+
+            self.assertTrue(any(f.fact_type == "substance_identity" for f in facts))
+            effect = next(f for f in facts if f.fact_type == "drug_effect")
+            self.assertEqual(effect.claim["target"], "Norepinephrine transporter")
+            self.assertEqual(effect.claim["action_type"], "INHIBITOR")
 
     def test_remote_stream_downloads_one_part_then_extracts(self):
         with tempfile.TemporaryDirectory() as tmp:

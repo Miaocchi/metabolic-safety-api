@@ -24,8 +24,10 @@ from .schemas import EvidenceFact, now_utc, slugify, stable_hash
 
 OPENFDA_SECTIONS = ("pharmacokinetics", "clinical_pharmacology", "drug_interactions", "overdosage", "warnings", "boxed_warning")
 OPENFDA_DOSE_SECTIONS = ("dosage_and_administration", "dosage_forms_and_strengths", "overdosage")
+OPENFDA_EFFECT_SECTIONS = ("indications_and_usage", "purpose", "mechanism_of_action", "pharmacodynamics")
 DAILYMED_SECTION_HINTS = ("PHARMACOKINETICS", "CLINICAL PHARMACOLOGY", "DRUG INTERACTIONS", "OVERDOSAGE", "WARNINGS", "BOXED WARNING")
 DAILYMED_DOSE_SECTION_HINTS = ("DOSAGE AND ADMINISTRATION", "DOSAGE FORMS AND STRENGTHS", "OVERDOSAGE")
+DAILYMED_EFFECT_SECTION_HINTS = ("INDICATIONS AND USAGE", "PURPOSE", "MECHANISM OF ACTION", "PHARMACODYNAMICS")
 CYP_RE = re.compile(r"\bCYP(?:1A2|2A6|2B6|2C8|2C9|2C19|2D6|2E1|3A4|3A5|3A7|4A11)\b", re.I)
 HALF_LIFE_RE = re.compile(
     r"(?:half[-\s]?life|t\s*1\s*/\s*2|t1/2|terminal\s+half[-\s]?life)"
@@ -184,6 +186,11 @@ def openfda_result_facts(result: dict[str, Any]) -> list[EvidenceFact]:
             updated_at=now_utc(),
         )
     ]
+    effect_sections = [(section, joined_sections(result, (section,))) for section in OPENFDA_EFFECT_SECTIONS]
+    clinical_pharmacology = joined_sections(result, ("clinical_pharmacology",))
+    if re.search(r"mechanism\s+of\s+action|pharmacodynamic", clinical_pharmacology, re.I):
+        effect_sections.append(("clinical_pharmacology", clinical_pharmacology))
+    facts.extend(drug_effect_facts(subject_id, effect_sections, "openFDA drug label bulk", url, "bulk_json"))
     facts.extend(pk_and_enzyme_facts(subject_id, joined_sections(result, OPENFDA_SECTIONS), "openFDA drug label bulk", url, "bulk_json"))
     overdose_text = joined_sections(result, ("overdosage",))
     if overdose_text:
@@ -252,6 +259,8 @@ def dailymed_xml_facts(xml_bytes: bytes) -> list[EvidenceFact]:
         )
     ]
     sections = list(spl_sections(root))
+    effect_sections = [(section_title, text) for section_title, text in sections if matches_any(section_title, DAILYMED_EFFECT_SECTION_HINTS)]
+    facts.extend(drug_effect_facts(subject_id, effect_sections, "DailyMed SPL bulk", url, "bulk_spl_xml"))
     text = "\n".join(text for section_title, text in sections if matches_any(section_title, DAILYMED_SECTION_HINTS))
     facts.extend(pk_and_enzyme_facts(subject_id, text, "DailyMed SPL bulk", url, "bulk_spl_xml"))
     overdose_text = "\n".join(text for section_title, text in sections if matches_any(section_title, ("OVERDOSAGE",)))
@@ -260,6 +269,36 @@ def dailymed_xml_facts(xml_bytes: bytes) -> list[EvidenceFact]:
     dose_text = "\n".join(text for section_title, text in sections if matches_any(section_title, DAILYMED_DOSE_SECTION_HINTS))
     if dose_text:
         facts.extend(extract_dose_candidate_facts(subject_id, dose_text, "DailyMed SPL bulk", url, "bulk_spl_xml", section="dosage"))
+    return facts
+
+
+def drug_effect_facts(subject_id: str, sections: Iterable[tuple[str, str]], source_name: str, source_url: str, method: str) -> list[EvidenceFact]:
+    facts: list[EvidenceFact] = []
+    for section, text in sections:
+        clean = squash(text)
+        if not clean:
+            continue
+        section_name = squash(section or "drug_effect") or "drug_effect"
+        lower_section = section_name.lower()
+        claim: dict[str, Any] = {"section": section_name, "effect_text": clean[:2500]}
+        if "mechanism" in lower_section:
+            claim["mechanism_of_action"] = clean[:1600]
+        confidence = "High" if "mechanism" in lower_section or "pharmacodynamic" in lower_section else "Medium"
+        facts.append(EvidenceFact(
+            fact_id=f"{slugify(source_name)}_effect_{stable_hash(subject_id + section_name + clean[:1000])}",
+            fact_type="drug_effect",
+            subject_ids=[subject_id],
+            claim=claim,
+            confidence=confidence,
+            source_tier="Regulatory",
+            source_name=source_name,
+            source_url=source_url,
+            evidence_quote=clean[:1200],
+            extraction_method=f"{method}_drug_effect",
+            review_status="unreviewed",
+            use_policy="candidate_signal",
+            updated_at=now_utc(),
+        ))
     return facts
 
 
@@ -438,6 +477,39 @@ def load_chembl_bulk_facts(source_dir: Path, max_records: int = 100_000) -> list
         try:
             with sqlite3.connect(db_path) as conn:
                 conn.row_factory = sqlite3.Row
+                try:
+                    mechanism_rows = conn.execute("""
+                        SELECT md.chembl_id, md.pref_name, dm.mechanism_of_action, dm.action_type, td.pref_name target_name
+                        FROM drug_mechanism dm
+                        JOIN molecule_dictionary md ON md.molregno = dm.molregno
+                        LEFT JOIN target_dictionary td ON td.tid = dm.tid
+                        WHERE md.pref_name IS NOT NULL
+                          AND (dm.mechanism_of_action IS NOT NULL OR td.pref_name IS NOT NULL)
+                        ORDER BY md.pref_name
+                    """)
+                    for mech in mechanism_rows:
+                        name = mech["pref_name"]
+                        subject_id = slugify(name)
+                        facts.append(EvidenceFact(
+                            fact_id=f"chembl_bulk_effect_{stable_hash(str(mech['chembl_id']) + subject_id + str(mech['mechanism_of_action']) + str(mech['target_name']))}",
+                            fact_type="drug_effect",
+                            subject_ids=[subject_id],
+                            claim={"mechanism_of_action": mech["mechanism_of_action"] or "", "action_type": mech["action_type"] or "", "target": mech["target_name"] or ""},
+                            confidence="High",
+                            source_tier="CuratedDB",
+                            source_name="ChEMBL drug mechanism",
+                            source_url="https://www.ebi.ac.uk/chembl/",
+                            evidence_quote=mech["mechanism_of_action"] or mech["target_name"] or "ChEMBL mechanism",
+                            extraction_method="bulk_sqlite_mechanism",
+                            review_status="machine_checked",
+                            use_policy="evidence_source",
+                            updated_at=now_utc(),
+                        ))
+                        count += 1
+                        if max_records and count >= max_records:
+                            return dedupe_fact_objects(facts)
+                except sqlite3.Error:
+                    pass
                 rows = conn.execute("""
                     SELECT md.chembl_id, md.pref_name, md.molecule_type, cp.alogp, cp.psa, cp.full_mwt
                     FROM molecule_dictionary md
