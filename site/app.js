@@ -56,14 +56,32 @@ const ui = {
   selected: "\u5df2\u9009\u62e9",
 };
 
-function apiUrl(path) {
+function apiCacheKey() {
+  const counts = state.manifest?.counts || {};
+  return [
+    state.manifest?.dataset_version,
+    state.manifest?.api_version,
+    counts.substances,
+    counts.interactions,
+    counts.dose_rules,
+    counts.dose_candidates,
+    counts.overdose_warnings,
+  ].filter(Boolean).join("-") || "boot";
+}
+
+function apiUrl(path, options = {}) {
   const cleanPath = String(path || "").replace(/^\/?api\//, "").replace(/^\//, "");
-  return new URL(`api/${cleanPath}`, window.location.href).toString();
+  const url = new URL(`api/${cleanPath}`, window.location.href);
+  if (options.versioned !== false && cleanPath !== "manifest.json") {
+    url.searchParams.set("_v", apiCacheKey());
+  }
+  return url.toString();
 }
 
 async function fetchJson(path) {
-  const cache = path === "manifest.json" ? "no-cache" : "force-cache";
-  const response = await fetch(apiUrl(path), { cache });
+  const cleanPath = String(path || "").replace(/^\/?api\//, "").replace(/^\//, "");
+  const isManifest = cleanPath === "manifest.json";
+  const response = await fetch(apiUrl(path, { versioned: !isManifest }), { cache: isManifest ? "no-store" : "no-cache" });
   if (!response.ok) throw new Error(`${ui.fetchFailed}: ${path} HTTP ${response.status}`);
   return response.json();
 }
