@@ -11,6 +11,10 @@ const state = {
   remoteSubstanceCache: [],
   remoteInteractionCache: new Map(),
   remoteDoseRuleCache: new Map(),
+  remoteOverdoseWarningCache: new Map(),
+  remoteDrugEffectCache: new Map(),
+  remotePharmacokineticCache: new Map(),
+  remoteEnzymeRelationCache: new Map(),
   adverseSignalCache: new Map(),
   remoteImportToken: 0,
   remoteLastImportQuery: "",
@@ -240,11 +244,13 @@ function normalizeRemoteBaseUrl(value) {
   trimmed = trimmed.replace(/\/search\/index\.json$/i, "");
   trimmed = trimmed.replace(/\/search$/i, "");
   const apiMarker = "/metabolic-safety-api/api";
-  const markerIndex = trimmed.indexOf(apiMarker);
-  if (markerIndex >= 0) return `${trimmed.slice(0, markerIndex)}${apiMarker}`;
-  return trimmed || defaultRemoteApiBaseUrl;
+  const rootMarker = "/metabolic-safety-api";
+  const apiIndex = trimmed.indexOf(apiMarker);
+  if (apiIndex >= 0) return `${trimmed.slice(0, apiIndex)}${apiMarker}`;
+  const rootIndex = trimmed.indexOf(rootMarker);
+  if (rootIndex >= 0) return `${trimmed.slice(0, rootIndex)}${rootMarker}/api`;
+  return trimmed || hostedRemoteApiBaseUrl;
 }
-
 function remoteEnabled() {
   return Boolean(state.remoteConfig?.enabled && state.remoteConfig?.baseUrl);
 }
@@ -274,18 +280,8 @@ function setRemoteApiStatus(message, kind = "") {
 
 function loadRemoteConfig() {
   const storedBase = localStorage.getItem(remoteApiBaseStorageKey) || "";
-  const normalizedStoredBase = normalizeRemoteBaseUrl(storedBase);
-  const wasHostedOrNested = normalizedStoredBase === hostedRemoteApiBaseUrl
-    || String(storedBase || "").includes("/metabolic-safety-api/api/");
-  const shouldMigrateOldDefault = wasHostedOrNested
-    && localStorage.getItem(remoteApiBaseMigratedStorageKey) !== "2";
-  const baseUrl = !storedBase || shouldMigrateOldDefault
-    ? defaultRemoteApiBaseUrl
-    : normalizedStoredBase;
-  if (shouldMigrateOldDefault) {
-    localStorage.setItem(remoteApiBaseMigratedStorageKey, "2");
-    localStorage.setItem(remoteApiBaseStorageKey, defaultRemoteApiBaseUrl);
-  }
+  const baseUrl = storedBase ? normalizeRemoteBaseUrl(storedBase) : hostedRemoteApiBaseUrl;
+  if (!storedBase) localStorage.setItem(remoteApiBaseStorageKey, baseUrl);
   state.remoteConfig = {
     enabled: localStorage.getItem(remoteFallbackStorageKey) === "1",
     baseUrl,
@@ -307,7 +303,7 @@ function syncRemoteControls() {
   if (enabled) enabled.checked = Boolean(state.remoteConfig.enabled);
   const base = state.remoteConfig.baseUrl;
   if (!base) {
-    setRemoteApiStatus("\u8fdc\u7a0b\u56de\u9000\u9ed8\u8ba4\u5173\u95ed\uff1b\u586b\u5199 本机镜像 /remote-api 或 GitHub Pages /api \u5730\u5740\u540e\u53ef\u542f\u7528\u3002", "");
+    setRemoteApiStatus("\u8fdc\u7a0b\u56de\u9000\u9ed8\u8ba4\u5173\u95ed\uff1b\u9ed8\u8ba4\u4f7f\u7528 GitHub Pages \u65b0\u7248 /api\uff0c\u4e5f\u53ef\u586b\u5199\u672c\u673a\u955c\u50cf /remote-api\u3002", "");
   } else if (state.remoteConfig.enabled) {
     setRemoteApiStatus(`\u8fdc\u7a0b\u56de\u9000\u5df2\u542f\u7528\uff1a${base}`, "ok");
   } else {
@@ -323,6 +319,10 @@ function saveRemoteConfigFromControls() {
   state.remoteSearchIndex = null;
   state.remoteInteractionCache = new Map();
   state.remoteDoseRuleCache = new Map();
+  state.remoteOverdoseWarningCache = new Map();
+  state.remoteDrugEffectCache = new Map();
+  state.remotePharmacokineticCache = new Map();
+  state.remoteEnzymeRelationCache = new Map();
   localStorage.setItem(remoteApiBaseStorageKey, base);
   localStorage.setItem(remoteFallbackStorageKey, enabled ? "1" : "0");
   syncRemoteControls();
@@ -389,24 +389,40 @@ async function ensureRemoteSearchIndex() {
   return Array.isArray(state.remoteSearchIndex) ? state.remoteSearchIndex : [];
 }
 
+function remoteSearchTerms(item = {}) {
+  const aliases = Array.isArray(item.aliases) ? item.aliases : String(item.aliases || "").split(/[|,]/);
+  return [item.id, item.name_en, item.name_zh, ...aliases]
+    .filter(Boolean)
+    .map((value) => String(value).trim().toLowerCase())
+    .filter(Boolean);
+}
+
 function remoteSearchHaystack(item = {}) {
-  return `${item.id || ""} ${item.name_en || ""} ${item.name_zh || ""} ${Array.isArray(item.aliases) ? item.aliases.join(" ") : item.aliases || ""}`.toLowerCase();
+  return remoteSearchTerms(item).join(" ");
+}
+
+function remoteSearchScore(item = {}, normalized = "") {
+  const terms = remoteSearchTerms(item);
+  if (!terms.length) return 0;
+  if (terms.some((term) => term === normalized)) return 100;
+  if (terms.some((term) => term.startsWith(normalized))) return 80;
+  const id = String(item.id || "").toLowerCase();
+  if (id.includes(normalized)) return 62;
+  if (terms.some((term) => term.includes(normalized))) return 42;
+  return remoteSearchHaystack(item).includes(normalized) ? 20 : 0;
 }
 
 async function searchRemoteSubstances(query, limit = 30) {
   const normalized = String(query || "").trim().toLowerCase();
   if (!normalized || !remoteEnabled()) return [];
   const index = await ensureRemoteSearchIndex();
-  const matches = [];
-  for (const item of index) {
-    if (remoteSearchHaystack(item).includes(normalized)) {
-      matches.push(item);
-      if (matches.length >= limit) break;
-    }
-  }
-  return matches;
+  return index
+    .map((item) => ({ item, score: remoteSearchScore(item, normalized) }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score || String(a.item.name_zh || a.item.name_en || a.item.id).length - String(b.item.name_zh || b.item.name_en || b.item.id).length)
+    .slice(0, limit)
+    .map((row) => row.item);
 }
-
 async function remotePathsForId(id) {
   if (!id || !remoteEnabled()) return {};
   const index = await ensureRemoteSearchIndex();
@@ -417,13 +433,65 @@ async function remotePathsForId(id) {
     dose_rules: `dose-rules/by-substance/${encodeURIComponent(id)}.json`,
     dose_candidates: `dose-candidates/by-substance/${encodeURIComponent(id)}.json`,
     overdose_warnings: `overdose-warnings/by-substance/${encodeURIComponent(id)}.json`,
+    drug_effects: `drug-effects/by-substance/${encodeURIComponent(id)}.json`,
+    pharmacokinetics: `pharmacokinetics/by-substance/${encodeURIComponent(id)}.json`,
+    enzyme_relations: `enzyme-relations/by-substance/${encodeURIComponent(id)}.json`,
+  };
+}
+
+async function fetchRemoteEvidenceRows(id, pathKey, cache, limit = 24, explicitPaths = null) {
+  if (!id || !remoteEnabled()) return [];
+  if (cache.has(id)) return cache.get(id);
+  try {
+    const paths = explicitPaths || await remotePathsForId(id);
+    const path = paths?.[pathKey];
+    if (!path) {
+      cache.set(id, []);
+      return [];
+    }
+    const rows = await fetchRemoteJson(path, { optional: true, fallback: [] });
+    const list = normalizeRemoteList(rows).slice(0, limit);
+    cache.set(id, list);
+    return list;
+  } catch {
+    cache.set(id, []);
+    return [];
+  }
+}
+
+function mergeRemoteEvidenceIntoSubstance(substance = {}, evidence = {}) {
+  const remoteEvidence = {
+    ...(substance.remote_evidence || {}),
+    drug_effects: normalizeRemoteList(evidence.drug_effects || substance.remote_evidence?.drug_effects || []),
+    pharmacokinetics: normalizeRemoteList(evidence.pharmacokinetics || substance.remote_evidence?.pharmacokinetics || []),
+    enzyme_relations: normalizeRemoteList(evidence.enzyme_relations || substance.remote_evidence?.enzyme_relations || []),
+  };
+  const enzymeTags = remoteEvidence.enzyme_relations.map((row) => row.tag).filter(Boolean);
+  const cypTags = [...new Set([...(substance.cyp_tags || []), ...enzymeTags])];
+  const pkHalfLife = remoteEvidence.pharmacokinetics.find((row) => row.half_life_hours !== null && row.half_life_hours !== undefined)?.half_life_hours;
+  return {
+    ...substance,
+    cyp_tags: cypTags,
+    base_half_life: substance.base_half_life || pkHalfLife || undefined,
+    remote_evidence: remoteEvidence,
   };
 }
 
 async function fetchRemoteSubstanceDetail(id) {
   if (!id || !remoteEnabled()) return null;
   const paths = await remotePathsForId(id);
-  return normalizeRemoteSubstance(await fetchRemoteJson(paths.substance));
+  const detail = normalizeRemoteSubstance(await fetchRemoteJson(paths.substance));
+  const detailPaths = { ...paths, ...(detail.paths || {}) };
+  const [drugEffects, pharmacokinetics, enzymeRelations] = await Promise.all([
+    fetchRemoteEvidenceRows(id, "drug_effects", state.remoteDrugEffectCache, 24, detailPaths),
+    fetchRemoteEvidenceRows(id, "pharmacokinetics", state.remotePharmacokineticCache, 16, detailPaths),
+    fetchRemoteEvidenceRows(id, "enzyme_relations", state.remoteEnzymeRelationCache, 24, detailPaths),
+  ]);
+  return normalizeRemoteSubstance(mergeRemoteEvidenceIntoSubstance(detail, {
+    drug_effects: drugEffects,
+    pharmacokinetics,
+    enzyme_relations: enzymeRelations,
+  }));
 }
 
 async function fetchRemoteDoseRulesForId(id) {
@@ -432,7 +500,7 @@ async function fetchRemoteDoseRulesForId(id) {
   try {
     const paths = await remotePathsForId(id);
     const rows = await fetchRemoteJson(paths.dose_rules, { optional: true, fallback: [] });
-    const list = Array.isArray(rows) ? rows : [];
+    const list = normalizeRemoteList(rows);
     state.remoteDoseRuleCache.set(id, list);
     return list;
   } catch {
@@ -441,11 +509,68 @@ async function fetchRemoteDoseRulesForId(id) {
   }
 }
 
+
+function normalizeRemoteList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (payload && typeof payload === "object") return [payload];
+  return [];
+}
+
+async function fetchRemoteDoseRulesForIds(ids = []) {
+  if (!remoteEnabled() || !ids.length) return [];
+  const rows = (await Promise.all([...new Set(ids)].map((id) => fetchRemoteDoseRulesForId(id)))).flat();
+  mergeRemoteDoseRules(rows);
+  return rows;
+}
+
+async function fetchRemoteOverdoseWarningsForId(id) {
+  return fetchRemoteEvidenceRows(id, "overdose_warnings", state.remoteOverdoseWarningCache, 6);
+}
+
+
+function doseRuleSubjectKey(rule = {}) {
+  return String(rule.subject_id || rule.key || rule.original_subject_id || "").toLowerCase();
+}
+
+function doseRuleRouteKey(rule = {}) {
+  return String(rule.route || "").trim().toLowerCase();
+}
+
+function doseRuleIsReviewed(rule = {}) {
+  return rule.review_status === "machine_checked" || (rule.confidence === "High" && !rule.population?.review_required);
+}
+
+function doseRuleNeedsReview(rule = {}) {
+  const normalizedFrom = Array.isArray(rule.normalized_from) ? rule.normalized_from : [];
+  return rule.review_status === "unreviewed" || Boolean(rule.population?.review_required) || normalizedFrom.includes("dose_candidate");
+}
+
+function shouldSkipRemoteDoseRule(rule = {}, existingRules = []) {
+  if (!doseRuleNeedsReview(rule)) return false;
+  const subject = doseRuleSubjectKey(rule);
+  if (!subject) return false;
+  const route = doseRuleRouteKey(rule);
+  return existingRules.some((existing) => {
+    if (!doseRuleIsReviewed(existing)) return false;
+    if (doseRuleSubjectKey(existing) !== subject) return false;
+    const existingRoute = doseRuleRouteKey(existing);
+    return !route || !existingRoute || route === existingRoute;
+  });
+}
+
 function mergeRemoteDoseRules(rules = []) {
-  if (!Array.isArray(rules) || !rules.length) return;
+  const incoming = normalizeRemoteList(rules);
+  if (!incoming.length) return;
   const byId = new Map((state.doseRules || []).map((rule) => [rule.rule_id, rule]));
-  for (const rule of rules) {
-    if (rule?.rule_id) byId.set(rule.rule_id, { ...rule, remote_source: "remote_static_api" });
+  const existingRules = [...byId.values()];
+  const sortedRules = [...incoming].sort((a, b) => Number(doseRuleIsReviewed(b)) - Number(doseRuleIsReviewed(a)));
+  for (const rule of sortedRules) {
+    if (!rule?.rule_id) continue;
+    if (shouldSkipRemoteDoseRule(rule, existingRules)) continue;
+    const normalized = { ...rule, remote_source: rule.remote_source || "remote_static_api" };
+    byId.set(rule.rule_id, normalized);
+    existingRules.push(normalized);
   }
   state.doseRules = [...byId.values()];
 }
@@ -464,7 +589,7 @@ async function fetchRemoteInteractionsForId(id) {
   try {
     const paths = await remotePathsForId(id);
     const rows = await fetchRemoteJson(paths.interactions, { optional: true, fallback: [] });
-    const list = Array.isArray(rows) ? rows : [];
+    const list = normalizeRemoteList(rows);
     state.remoteInteractionCache.set(id, list);
     return list;
   } catch {
@@ -602,18 +727,335 @@ function renderPmi() {
       <small>t1/2 ${row.halfLife.toFixed(1)}h \u00b7 Cmax ${formatNumber(row.cmax, 3)}</small>
     </div>`).join("");
   const warningCount = rows.reduce((sum, row) => sum + row.warnings.length, 0);
+  const forwardRows = forwardExposureGroups(entries, now, 24).slice(0, state.advancedMode ? 5 : 3);
+  const forwardIndex = forwardRows.length ? Math.min(100, Math.round(forwardRows.reduce((sum, row) => sum + row.index, 0) / Math.sqrt(forwardRows.length))) : 0;
   target.innerHTML = `
     <div class="pmi-gauge">
       <div class="pmi-score">${pmi}</div>
-      <div><strong>${level}</strong><span>\u603b\u66b4\u9732 ${formatNumber(totalExposure, 3)} \u00b7 \u6d3b\u8dc3 ${entries.length} \u9879</span></div>
+      <div><strong>${level}</strong><span>\u603b\u66b4\u9732 ${formatNumber(totalExposure, 3)} \u00b7 \u5411\u540e\u66b4\u9732\u6307\u6570 ${forwardIndex}/100 \u00b7 \u6d3b\u8dc3 ${entries.length} \u9879</span></div>
     </div>
     <div class="pmi-bars">
       <div><span>\u51b2\u7a81/\u8fc7\u91cf</span><strong>${Math.round(riskScore)}</strong></div>
       <div><span>\u6a21\u578b\u66b4\u9732</span><strong>${Math.round(exposureScore)}</strong></div>
       <div><span>\u4e2a\u4f53\u4fee\u6b63</span><strong>${Math.round(modifierScore)}</strong></div>
-      <div><span>\u6a21\u578b\u8b66\u544a</span><strong>${warningCount}</strong></div>
+      <div><span>\u5411\u540e\u66b4\u9732</span><strong>${forwardIndex}</strong></div>
     </div>
     <div class="pmi-table">${topRows}</div>
+    <div class="pmi-forward">
+      <div class="pmi-forward-head"><strong>\u5411\u540e\u66b4\u9732\u6307\u6570</strong><span>\u672a\u6765 24h AUC / \u5cf0\u503c / \u8fbe\u5cf0\u65f6\u95f4</span></div>
+      <div class="pmi-forward-list">${renderForwardExposureRows(forwardRows)}</div>
+    </div>
+  `;
+}
+
+
+function concentrationUnitLabel(entry = {}) {
+  const unit = String(entry?.unit || "mg").toLowerCase();
+  if (unit === "mcg") return "ug";
+  return unit || "mg";
+}
+
+
+function forwardExposureMetricsForEntry(entry, params, now = Date.now(), horizonHours = 24) {
+  const dose = Number(entry.dosage || 0);
+  if (!Number.isFinite(dose) || dose <= 0) return null;
+  const elapsedHours = minutesBetween(entry.timestamp, now) / 60;
+  const samples = 96;
+  const stepHours = horizonHours / samples;
+  let previous = concentrationAt(elapsedHours, dose, params);
+  let auc24 = 0;
+  let peak = previous;
+  let tPeak = 0;
+  for (let i = 1; i <= samples; i += 1) {
+    const offsetHours = stepHours * i;
+    const value = concentrationAt(elapsedHours + offsetHours, dose, params);
+    auc24 += ((previous + value) / 2) * stepHours;
+    if (value > peak) {
+      peak = value;
+      tPeak = offsetHours;
+    }
+    previous = value;
+  }
+  return {
+    current: concentrationAt(elapsedHours, dose, params),
+    auc24,
+    peak,
+    minutesToPeak: tPeak * 60,
+    halfLifeHours: params.adjustedHalfLifeHours || 0,
+    unit: concentrationUnitLabel(entry),
+  };
+}
+
+function forwardExposureIndex(auc24, peak, minutesToPeak, halfLifeHours) {
+  const aucScore = Math.min(62, Math.log10(Math.max(auc24, 0) + 1) * 30);
+  const peakScore = Math.min(26, Math.log10(Math.max(peak, 0) + 1) * 16);
+  const peakSoonScore = minutesToPeak > 0 && minutesToPeak <= 180 ? 8 : 0;
+  const lingerScore = Math.min(12, Math.max(0, Number(halfLifeHours || 0) - 6) * 0.8);
+  return Math.round(clampNumber(aucScore + peakScore + peakSoonScore + lingerScore, 0, 0, 100));
+}
+
+function forwardExposureGroups(entries = activeEntries(), now = Date.now(), horizonHours = 24) {
+  const bySubstance = new Map();
+  entries.forEach((entry) => {
+    const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
+    const params = adjustedPkParams(entry, substance);
+    const metrics = forwardExposureMetricsForEntry(entry, params, now, horizonHours);
+    if (!metrics) return;
+    const group = bySubstance.get(entry.substanceId) || {
+      id: entry.substanceId,
+      name: substanceName(entry.substanceId),
+      auc24: 0,
+      current: 0,
+      peak: 0,
+      minutesToPeak: null,
+      halfLifeHours: 0,
+      count: 0,
+      unitSet: new Set(),
+    };
+    group.auc24 += metrics.auc24;
+    group.current += metrics.current;
+    group.peak = Math.max(group.peak, metrics.peak);
+    if (metrics.minutesToPeak > 0) {
+      group.minutesToPeak = group.minutesToPeak === null ? metrics.minutesToPeak : Math.min(group.minutesToPeak, metrics.minutesToPeak);
+    }
+    group.halfLifeHours = Math.max(group.halfLifeHours, metrics.halfLifeHours);
+    group.count += 1;
+    group.unitSet.add(metrics.unit);
+    bySubstance.set(entry.substanceId, group);
+  });
+  return [...bySubstance.values()].map((group) => {
+    const unit = group.unitSet.size === 1 ? [...group.unitSet][0] : "mixed";
+    const minutesToPeak = group.minutesToPeak ?? 0;
+    return {
+      ...group,
+      unit,
+      minutesToPeak,
+      index: forwardExposureIndex(group.auc24, group.peak, minutesToPeak, group.halfLifeHours),
+    };
+  }).sort((a, b) => b.index - a.index || b.auc24 - a.auc24);
+}
+
+function forwardExposureUnitText(unit) {
+  return unit === "mixed" ? "mixed/L" : `${unit}/L`;
+}
+
+function renderForwardExposureRows(rows = []) {
+  if (!rows.length) return `<div class="pmi-forward-empty">\u672a\u68c0\u51fa\u672a\u6765 24h \u7684\u660e\u663e\u5269\u4f59\u66b4\u9732\u3002</div>`;
+  return rows.map((row) => {
+    const unitText = forwardExposureUnitText(row.unit);
+    const peakTime = row.minutesToPeak > 0 ? `${formatDurationMinutes(row.minutesToPeak)}\u540e\u8fbe\u5cf0` : "\u5df2\u5728\u9ad8\u4f4d/\u5df2\u8fc7\u5cf0";
+    const doseCount = `\u00d7${row.count}`;
+    return `
+      <div class="pmi-forward-row">
+        <div class="pmi-forward-drug"><span>${escapeHtml(row.name)}</span></div>
+        <div class="pmi-forward-count"><span>${escapeHtml(doseCount)}</span></div>
+        <div class="pmi-forward-peak"><small>${escapeHtml(peakTime)}</small></div>
+        <strong>${row.index}</strong>
+        <small>AUC24 ${formatNumber(row.auc24, row.auc24 < 1 ? 3 : 1)} \u00b7 peak ${formatNumber(row.peak, row.peak < 1 ? 3 : 2)} ${escapeHtml(unitText)}</small>
+      </div>
+    `;
+  }).join("");
+}
+function exposureForecasts(entries = activeEntries(), now = Date.now()) {
+  const forecasts = [];
+  entries.forEach((entry) => {
+    if (!entry.timestamp) return;
+    const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
+    const params = adjustedPkParams(entry, substance);
+    const dose = Number(entry.dosage || 0);
+    if (!Number.isFinite(dose) || dose <= 0) return;
+    const elapsedHours = minutesBetween(entry.timestamp, now) / 60;
+    const horizonHours = Math.min(72, Math.max(12, (params.adjustedHalfLifeHours || 4) * 3 + (params.tlagHours || 0) + 6));
+    const metrics = exposureMetricsForEntry(entry, params, horizonHours);
+    if (!Number.isFinite(metrics.cmax) || metrics.cmax <= 0) return;
+    const minutesToPeak = (metrics.tmaxHours - elapsedHours) * 60;
+    if (minutesToPeak <= 8 || minutesToPeak > 12 * 60) return;
+    const current = elapsedHours >= 0 ? concentrationAt(elapsedHours, dose, params) : 0;
+    const lift = metrics.cmax - current;
+    if (lift < Math.max(metrics.cmax * 0.12, 0.000001)) return;
+    const effect = compactSubstanceEffect(substance);
+    forecasts.push({
+      entry,
+      substance,
+      name: substanceName(entry.substanceId),
+      effect,
+      current,
+      peak: metrics.cmax,
+      minutesToPeak,
+      elapsedHours,
+      unit: concentrationUnitLabel(entry),
+      tmaxHours: metrics.tmaxHours,
+    });
+  });
+  return forecasts.sort((a, b) => a.minutesToPeak - b.minutesToPeak || b.peak - a.peak);
+}
+
+function exposureForecastLine(forecast) {
+  const digits = forecast.peak < 1 ? 3 : forecast.peak < 10 ? 2 : 1;
+  const currentText = formatNumber(forecast.current, digits);
+  const peakText = formatNumber(forecast.peak, digits);
+  const startText = forecast.elapsedHours < 0
+    ? `\u8ddd\u5f00\u59cb ${formatDurationMinutes(Math.abs(forecast.elapsedHours * 60))}\uff1b`
+    : "";
+  return `\u9884\u8b66\uff1a${forecast.name}${startText}\u9884\u8ba1 ${formatDurationMinutes(forecast.minutesToPeak)} \u540e\u63a5\u8fd1\u5cf0\u503c\uff08${currentText} \u2192 ${peakText} ${forecast.unit}/L\uff09\uff0c${forecast.effect}\u76f8\u5173\u526f\u4f5c\u7528\u53ef\u80fd\u5728\u8fbe\u5cf0\u524d\u540e\u66f4\u660e\u663e\u3002`;
+}
+
+function compactWarningNote(note = "") {
+  const cleaned = String(note || "")
+    .replace(/\u8fd9\u662f\u672c\u5730\u5242\u91cf\u89c4\u5219\u63d0\u793a\uff0c\u4e0d\u66ff\u4ee3\u533b\u751f\u3001\u836f\u5e08\u6216\u6025\u6551\u5224\u65ad\u3002?/g, "")
+    .replace(/\u8fd9\u662f\u836f\u7269\u8b66\u6212\u5019\u9009\u4fe1\u53f7\uff0c\u4e0d\u4ee3\u8868\u56e0\u679c\u5173\u7cfb\u3001\u53d1\u751f\u7387\u6216\u5df2\u786e\u8ba4\u8054\u7528\u51b2\u7a81\uff1b\u7528\u4e8e\u63d0\u9192\u8bb0\u5f55\u75c7\u72b6\u5e76\u5fc5\u8981\u65f6\u54a8\u8be2\u533b\u751f\/\u836f\u5e08\u3002?/g, "\u5019\u9009\u4fe1\u53f7\uff0c\u975e\u56e0\u679c\u8bc1\u636e\u3002")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "\u9700\u8981\u7ed3\u5408\u5242\u91cf\u3001\u65f6\u95f4\u548c\u5f53\u524d\u72b6\u6001\u7ee7\u7eed\u89c2\u5bdf\u3002";
+}
+
+function splitWarningNote(note = "") {
+  const text = compactWarningNote(note);
+  const boundaryLabels = "(?:\u6765\u6e90\u5c42\u7ea7|\u6570\u636e\u6765\u6e90|\u53ef\u4fe1\u5ea6|\u7c7b\u578b|\u5f53\u524d|\u6700\u5927|\u5355\u6b21|\u7d2f\u8ba1|\u9884\u8ba1|\u5efa\u8bae|\u6ce8\u610f|\u5019\u9009\u4fe1\u53f7|\u5171\u62a5\u544a|FAERS|openFDA|DailyMed|\u6a21\u578b\u4f30\u7b97|\u5411\u540e\u66b4\u9732|\u672a\u6765\u5cf0\u503c)[\uff1a:]";
+  const normalized = text
+    .replace(/[；;]/g, "|")
+    .replace(/([。！？!?])\s*(?=\S)/g, "$1|")
+    .replace(new RegExp("\\s+(?=" + boundaryLabels + ")", "g"), "|");
+  const pieces = normalized
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return pieces.length ? pieces : ["需要结合剂量、时间和当前状态继续观察。"];
+}
+
+function warningSegmentKind(text = "") {
+  if (/(?:FAERS|openFDA|DailyMed|\u6765\u6e90|\u53ef\u4fe1\u5ea6|\u8bc1\u636e|\u5019\u9009\u4fe1\u53f7)/i.test(text)) return "evidence";
+  if (/(?:\u5efa\u8bae|\u6ce8\u610f|\u8bf7|\u9700|\u8054\u7cfb|\u533b\u751f|\u836f\u5e08|\u6025\u6551|\u76d1\u6d4b|\u4fdd\u5b88)/.test(text)) return "action";
+  if (/(?:\u5f53\u524d|\u7d2f\u8ba1|\u6700\u5927|\u5355\u6b21|\u66b4\u9732|AUC|Cmax|\u5cf0\u503c|\u6d53\u5ea6|\u9884\u8ba1|mg|g\/L|ug\/L|\u03bcg\/L)/i.test(text)) return "metric";
+  return "detail";
+}
+
+function forecastWarningItem(forecast) {
+  const digits = forecast.peak < 1 ? 3 : forecast.peak < 10 ? 2 : 1;
+  const currentText = formatNumber(forecast.current, digits);
+  const peakText = formatNumber(forecast.peak, digits);
+  return {
+    subject: forecast.name,
+    level: "Minor",
+    levelText: "\u9884\u8b66",
+    meta: "\u672a\u6765\u5cf0\u503c",
+    note: `\u9884\u8ba1 ${formatDurationMinutes(forecast.minutesToPeak)} \u540e\u63a5\u8fd1\u5cf0\u503c\uff1a${currentText} \u2192 ${peakText} ${forecast.unit}/L\u3002${forecast.effect}\u76f8\u5173\u526f\u4f5c\u7528\u53ef\u80fd\u5728\u8fbe\u5cf0\u524d\u540e\u66f4\u660e\u663e\u3002`,
+  };
+}
+
+function groupedWarningItems(items = []) {
+  const bySubject = new Map();
+  items.forEach((item) => {
+    const subject = item.subject || "\u672a\u547d\u540d\u98ce\u9669";
+    if (!bySubject.has(subject)) bySubject.set(subject, { subject, items: [], topLevel: item.level || "Unknown" });
+    const group = bySubject.get(subject);
+    group.items.push(item);
+    if (riskSortValue(item.level) > riskSortValue(group.topLevel)) group.topLevel = item.level;
+  });
+  return [...bySubject.values()];
+}
+
+
+function renderWarningNote(note = "") {
+  const pieces = splitWarningNote(note);
+  if (pieces.length <= 1) {
+    return `<div class="warning-note-single" data-kind="${escapeHtml(warningSegmentKind(pieces[0]))}">${escapeHtml(pieces[0])}</div>`;
+  }
+  return `
+    <div class="warning-note-segments">
+      ${pieces.map((part) => `<p data-kind="${escapeHtml(warningSegmentKind(part))}">${escapeHtml(part)}</p>`).join("")}
+    </div>
+  `;
+}
+
+function renderWarningGroup(group) {
+  const topItem = group.items.reduce((best, item) => riskSortValue(item.level) > riskSortValue(best.level) ? item : best, group.items[0]);
+  const badgeText = topItem.levelText || riskLevelLabel(group.topLevel);
+  const rows = group.items.map((item) => `
+    <div class="warning-row">
+      <span>${escapeHtml(item.meta || "\u63d0\u9192")}</span>
+      ${renderWarningNote(item.note)}
+    </div>
+  `).join("");
+  return `
+    <article class="warning-group">
+      <header>
+        <div class="warning-subject">${escapeHtml(group.subject)}</div>
+        <span class="badge ${escapeHtml(group.topLevel)}">${escapeHtml(badgeText)}</span>
+      </header>
+      ${rows}
+    </article>
+  `;
+}
+
+function renderPeakForecastPanel(items = []) {
+  if (!items.length) return "";
+  const rows = items.map((item) => `
+    <article class="peak-forecast-card">
+      <header>
+        <strong>${escapeHtml(item.subject)}</strong>
+        <span>${escapeHtml(item.levelText || "\u9884\u8b66")}</span>
+      </header>
+      <div class="peak-forecast-meta">${escapeHtml(item.meta || "\u672a\u6765\u5cf0\u503c")}</div>
+      ${renderWarningNote(item.note)}
+    </article>
+  `).join("");
+  return `
+    <section class="peak-forecast-panel">
+      <div class="peak-forecast-title">
+        <strong>\u672a\u6765\u5cf0\u503c\u89c2\u5bdf</strong>
+        <span>${items.length} \u9879</span>
+      </div>
+      <div class="peak-forecast-list">${rows}</div>
+    </section>
+  `;
+}
+
+function renderPeakForecastWarning(items = []) {
+  const target = $("peakForecastWarning");
+  if (!target) return;
+  if (!items.length) {
+    target.className = "peak-forecast-host hidden";
+    target.innerHTML = "";
+    return;
+  }
+  target.className = "peak-forecast-host";
+  target.innerHTML = renderPeakForecastPanel(items);
+}
+function conciseWarningSummary(note = "", maxSegments = 2) {
+  return splitWarningNote(note).slice(0, maxSegments).join("?");
+}
+
+function sideEffectRiskSummary(risk = {}) {
+  const subject = riskSubjectText(risk);
+  const level = riskLevelLabel(risk.risk_level);
+  if (risk.risk_kind === "dose") {
+    const note = conciseWarningSummary(risk.note || "", 2);
+    return note ? `${level}\u5242\u91cf/\u8fc7\u91cf\u63d0\u9192\uff1a${note}` : `${subject} \u5b58\u5728 ${level} \u5242\u91cf/\u8fc7\u91cf\u63d0\u9192\u3002`;
+  }
+  if (risk.risk_kind === "model") {
+    const note = conciseWarningSummary(risk.note || "", 2);
+    return note ? `${level}\u6a21\u578b\u63d0\u9192\uff1a${note}` : `${subject} \u7684 PopPK \u6a21\u578b\u63d0\u793a\u9700\u8981\u5173\u6ce8\u3002`;
+  }
+  if (risk.risk_kind === "signal") {
+    const note = conciseWarningSummary(risk.note || "", 1);
+    return note ? `${level}\u5019\u9009\u4fe1\u53f7\uff1a${note}` : `${subject} \u6709\u516c\u5f00\u836f\u7269\u8b66\u6212\u5019\u9009\u4fe1\u53f7\uff0c\u9700\u7ed3\u5408\u75c7\u72b6\u89c2\u5bdf\u3002`;
+  }
+  const type = interactionTypeLabel(risk.interaction_type || "");
+  const typeText = type && type !== "\u672a\u5206\u7c7b" ? `\uff0c\u7c7b\u578b\uff1a${type}` : "";
+  return `${subject}\uff1a${level}\u8054\u7528\u51b2\u7a81${typeText}\u3002\u5b8c\u6574\u6765\u6e90\u3001raw_levels \u548c labels \u5728\u4e0b\u65b9\u5b8c\u6574\u98ce\u9669\u5217\u8868\u67e5\u770b\u3002`;
+}
+
+function renderWarningSummaryRow(item) {
+  return `
+    <article class="warning-summary-row">
+      <header>
+        <strong>${escapeHtml(item.subject)}</strong>
+        <span class="badge ${escapeHtml(item.level)}">${escapeHtml(item.levelText || riskLevelLabel(item.level))}</span>
+      </header>
+      <div class="warning-summary-meta">${escapeHtml(item.meta || "\u63d0\u9192")}</div>
+      <p>${escapeHtml(item.note)}</p>
+    </article>
   `;
 }
 
@@ -621,29 +1063,65 @@ function renderSideEffectWarning() {
   const target = $("sideEffectWarning");
   if (!target) return;
   const risks = state.activeRisks || [];
-  const highRisks = riskItemsForMode(risks).filter((risk) => riskSortValue(risk.risk_level) >= 3).slice(0, 4);
+  const visibleRiskItems = riskItemsForMode(risks);
+  const highRisks = visibleRiskItems.filter((risk) => riskSortValue(risk.risk_level) >= 3);
+  const summaryLimit = state.advancedMode ? 2 : 2;
+  const summaryRisks = highRisks.slice(0, summaryLimit);
+  const hiddenRiskCount = Math.max(0, highRisks.length - summaryRisks.length);
+  const forecastWarnings = exposureForecasts(activeEntries())
+    .slice(0, state.advancedMode ? 4 : 2)
+    .map(forecastWarningItem);
+  renderPeakForecastWarning(forecastWarnings);
   const modelWarnings = activeEntries().flatMap((entry) => {
     const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
     const params = adjustedPkParams(entry, substance);
-    return (params.warnings || []).map((warning) => `${substanceName(entry.substanceId)}\uff1a${warning}`);
-  }).slice(0, state.advancedMode ? 4 : 2);
-  const lines = [
-    ...highRisks.map((risk) => {
-      const note = risk.note || (risk.risk_kind === "signal" ? "\u836f\u7269\u8b66\u6212\u5019\u9009\u4fe1\u53f7" : "\u98ce\u9669\u63d0\u9192");
-      return `${riskSubjectText(risk)}\uff1a${riskLevelLabel(risk.risk_level)} \u00b7 ${note}`;
-    }),
+    return (params.warnings || []).map((warning) => ({
+      subject: substanceName(entry.substanceId),
+      level: "Moderate",
+      meta: "\u6a21\u578b\u534f\u53d8\u91cf",
+      note: conciseWarningSummary(warning, 1),
+    }));
+  }).slice(0, Math.max(0, summaryLimit - summaryRisks.length));
+  const warningItems = [
+    ...summaryRisks.map((risk) => ({
+      subject: riskSubjectText(risk),
+      level: risk.risk_level,
+      meta: risk.risk_kind === "dose"
+        ? "\u5242\u91cf/\u8fc7\u91cf"
+        : risk.risk_kind === "model"
+          ? "\u4ee3\u8c22\u6a21\u578b"
+          : risk.risk_kind === "signal"
+            ? "\u5019\u9009\u4fe1\u53f7"
+            : "\u8054\u7528\u51b2\u7a81",
+      note: sideEffectRiskSummary(risk),
+    })),
     ...modelWarnings,
   ];
-  if (!lines.length) {
-    target.className = "side-effect-warning empty";
-    target.textContent = state.advancedMode
-      ? "\u6682\u65e0\u526f\u4f5c\u7528\u3001\u8fc7\u91cf\u6216\u6a21\u578b\u5f02\u5e38\u8b66\u544a\uff1bUnknown \u8868\u793a\u8d44\u6599\u4e0d\u8db3\uff0c\u4e0d\u4ee3\u8868\u5b89\u5168\u3002"
-      : "\u6682\u65e0\u660e\u786e\u526f\u4f5c\u7528\u6216\u8fc7\u91cf\u63d0\u9192\u3002\u8d44\u6599\u4e0d\u5168\u65f6\u4ecd\u9700\u4fdd\u5b88\u4f7f\u7528\u3002";
+  if (!warningItems.length) {
+    target.className = forecastWarnings.length ? "side-effect-warning empty hidden" : "side-effect-warning empty";
+    target.textContent = forecastWarnings.length
+      ? ""
+      : (state.advancedMode
+        ? "\u6682\u65e0\u526f\u4f5c\u7528\u3001\u8fc7\u91cf\u6216\u6a21\u578b\u5f02\u5e38\u8b66\u544a\uff1bUnknown \u8868\u793a\u8d44\u6599\u4e0d\u8db3\uff0c\u4e0d\u4ee3\u8868\u5b89\u5168\u3002"
+        : "\u6682\u65e0\u660e\u786e\u526f\u4f5c\u7528\u6216\u8fc7\u91cf\u63d0\u9192\u3002\u8d44\u6599\u4e0d\u5168\u65f6\u4ecd\u9700\u4fdd\u5b88\u4f7f\u7528\u3002");
     return;
   }
-  target.className = "side-effect-warning";
-  const title = state.advancedMode ? "\u526f\u4f5c\u7528/\u8fc7\u91cf\u8b66\u544a" : "\u9700\u5173\u6ce8\u63d0\u9192";
-  target.innerHTML = `<strong>${title}</strong>${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}`;
+  target.className = "side-effect-warning compact-warning-summary";
+  const title = state.advancedMode ? "\u526f\u4f5c\u7528/\u8fc7\u91cf\u6458\u8981" : "\u9700\u5173\u6ce8\u63d0\u9192";
+  const countText = hiddenRiskCount
+    ? `${warningItems.length} \u6761\u6458\u8981 \u00b7 \u4e0b\u65b9\u8fd8\u6709 ${hiddenRiskCount} \u6761`
+    : `${warningItems.length} \u6761\u6458\u8981`;
+  const footer = hiddenRiskCount
+    ? `\u4e0b\u65b9\u5b8c\u6574\u98ce\u9669\u5217\u8868\u5c55\u793a\u5168\u90e8 ${visibleRiskItems.length} \u6761\u8bb0\u5f55\uff0c\u5305\u62ec raw_levels\u3001labels \u548c\u6765\u6e90\u5b57\u6bb5\u3002`
+    : "\u5b8c\u6574\u6765\u6e90\u3001\u8bc1\u636e\u5b57\u6bb5\u548c\u539f\u59cb\u6807\u7b7e\u5728\u4e0b\u65b9\u98ce\u9669\u5217\u8868\u4e2d\u67e5\u770b\u3002";
+  target.innerHTML = `
+    <div class="warning-head">
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(countText)}</span>
+    </div>
+    <div class="warning-summary-list">${warningItems.map(renderWarningSummaryRow).join("")}</div>
+    <div class="warning-footer">${escapeHtml(footer)}</div>
+  `;
 }
 
 function localizedLabel(map, value, fallback = "\u672a\u77e5") {
@@ -758,6 +1236,40 @@ function sentenceText(text) {
   return /[。！？.!?]$/.test(value) ? value : `${value}。`;
 }
 
+function shortEvidenceText(value, limit = 220) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > limit ? `${text.slice(0, limit - 1)}?` : text;
+}
+
+function primaryRemoteDrugEffect(substance = {}) {
+  const rows = normalizeRemoteList(substance.remote_evidence?.drug_effects);
+  if (!rows.length) return null;
+  const row = rows.find((item) => item.mechanism_of_action || item.target) || rows[0];
+  const effectText = shortEvidenceText(row.effect_text || row.evidence || row.mechanism_of_action, 260);
+  const mechanism = shortEvidenceText(row.mechanism_of_action, 220);
+  const target = [row.target, row.action_type].filter(Boolean).join(" / ");
+  return { row, effectText, mechanism, target };
+}
+
+function remotePkSummary(substance = {}) {
+  const rows = normalizeRemoteList(substance.remote_evidence?.pharmacokinetics);
+  const halfLife = substance.base_half_life || rows.find((row) => row.half_life_hours !== null && row.half_life_hours !== undefined)?.half_life_hours;
+  const parts = [];
+  if (halfLife) parts.push(`??? ${Number(halfLife).toFixed(1)}h`);
+  const clearance = rows.find((row) => row.clearance)?.clearance;
+  if (clearance) parts.push(`??? ${clearance}`);
+  const vd = rows.find((row) => row.volume_distribution)?.volume_distribution;
+  if (vd) parts.push(`Vd ${vd}`);
+  return parts.join(" ? ");
+}
+
+function substanceCypTags(substance = {}) {
+  const localTags = substance.cyp_tags || [];
+  const remoteTags = normalizeRemoteList(substance.remote_evidence?.enzyme_relations).map((row) => row.tag || [row.enzyme, row.relation].filter(Boolean).join("_")).filter(Boolean);
+  return [...new Set([...localTags, ...remoteTags])];
+}
+
 function effectDisplay(substance = {}) {
   const profile = findEffectProfile(substance);
   if (profile?.effect) return { text: profile.effect, profile, known: true };
@@ -802,7 +1314,7 @@ function consumerSubstanceEffect(substance = {}) {
   const lines = [`\u4f5c\u7528\uff1a${compactSubstanceEffect(substance)}`];
   const pk = pkSummary(substance);
   if (pk) lines.push(`\u65f6\u95f4\uff1a${pk}\u3002`);
-  const cyp = (substance.cyp_tags || []).map(formatCypTag).filter(Boolean).slice(0, 3);
+  const cyp = substanceCypTags(substance).map(formatCypTag).filter(Boolean).slice(0, 3);
   if (cyp.length) lines.push(`\u4ee3\u8c22\u8981\u70b9\uff1a${cyp.join("\uff0c")}\u3002`);
   lines.push("\u4fdd\u5b58\u540e\u4f1a\u6309\u4f60\u7684\u4f53\u91cd\u3001\u4f53\u8102\u3001\u5e74\u9f84\u3001\u7761\u7720\u548c\u4f53\u6e29\u4fee\u6b63\u66f2\u7ebf\u4e0e\u98ce\u9669\u3002");
   return lines.join(" ");
@@ -1130,6 +1642,23 @@ function doseAmountForRule(entry, rule) {
   return null;
 }
 
+
+function doseRouteMatches(entry = {}, rule = {}) {
+  const route = String(rule.route || "").trim().toLowerCase();
+  if (!route || ["any", "all", "unspecified", "unknown"].includes(route)) return true;
+  const entryRoute = String(entry.route || "").trim().toLowerCase();
+  if (!entryRoute || entryRoute === "other") return true;
+  const routeAliases = {
+    oral: ["oral", "po", "by mouth"],
+    sublingual: ["sublingual", "sl"],
+    iv: ["iv", "intravenous", "injection"],
+    insufflated: ["insufflated", "intranasal", "nasal"],
+    topical: ["topical", "transdermal"],
+  };
+  const aliases = routeAliases[entryRoute] || [entryRoute];
+  return aliases.some((alias) => route === alias || route.includes(alias));
+}
+
 function evaluateDoseRisks() {
   const now = Date.now();
   const risks = [];
@@ -1140,6 +1669,7 @@ function evaluateDoseRisks() {
     for (const entry of state.journal) {
       const substance = state.substanceById.get(entry.substanceId);
       if (!doseRuleMatches(rule, substance)) continue;
+      if (!doseRouteMatches(entry, rule)) continue;
       if (!entry.timestamp || entry.timestamp > now) continue;
       const ageHours = (now - entry.timestamp) / 3600000;
       if (ageHours > windowHours) continue;
@@ -1349,6 +1879,13 @@ async function refreshRisks() {
   const token = ++state.riskRequestToken;
   const entries = activeEntries();
   const ids = [...new Set(entries.map((entry) => entry.substanceId))];
+  if (remoteEnabled() && ids.length) {
+    try {
+      await fetchRemoteDoseRulesForIds(ids);
+    } catch (error) {
+      setRemoteApiStatus(`\u8fdc\u7a0b\u5242\u91cf\u89c4\u5219\u540c\u6b65\u5931\u8d25\uff1a${error.message || error}`, "error");
+    }
+  }
   const doseRisks = evaluateDoseRisks();
   const modelRisks = evaluateModelRisks(entries);
   const signalItems = await fetchAdverseSignalsForIds(ids);
@@ -1465,6 +2002,16 @@ function renderCombinedEffects() {
     .sort((a, b) => b.exposure - a.exposure)
     .slice(0, 5)
     .map((row) => `${substanceName(row.entry.substanceId)} ${formatNumber(row.exposure, 3)}`);
+  const forecastRows = exposureForecasts(entries, now)
+    .slice(0, state.advancedMode ? 5 : 3)
+    .map((forecast) => `${forecast.name} ${formatDurationMinutes(forecast.minutesToPeak)}\u540e\u5cf0\u503c ${formatNumber(forecast.peak, forecast.peak < 1 ? 3 : 2)} ${forecast.unit}/L`);
+  const forwardIndexRows = forwardExposureGroups(entries, now, 24)
+    .slice(0, state.advancedMode ? 5 : 3)
+    .map((row) => {
+      const unitText = forwardExposureUnitText(row.unit);
+      const peakTime = row.minutesToPeak > 0 ? `${formatDurationMinutes(row.minutesToPeak)}\u540e\u8fbe\u5cf0` : "\u5df2\u5728\u9ad8\u4f4d/\u5df2\u8fc7\u5cf0";
+      return `${row.name} ${row.index}/100 \u00b7 AUC24 ${formatNumber(row.auc24, row.auc24 < 1 ? 3 : 1)} \u00b7 peak ${formatNumber(row.peak, row.peak < 1 ? 3 : 2)} ${unitText} \u00b7 ${peakTime}`;
+    });
   const notableRisks = (state.activeRisks || [])
     .filter((risk) => riskSortValue(risk.risk_level) >= 3)
     .slice(0, 3)
@@ -1477,6 +2024,8 @@ function renderCombinedEffects() {
       <div class="combined-line"><strong>\u6d3b\u8dc3\u9879</strong>${escapeHtml(activeNames.join("\uff1b"))}</div>
       <div class="combined-line"><strong>\u53ef\u80fd\u4f5c\u7528</strong>${escapeHtml(effectRows.join("\uff1b"))}</div>
       <div class="combined-line"><strong>\u53e0\u52a0\u8981\u70b9</strong>${escapeHtml(signals.length ? signals.join("\uff1b") : "\u672a\u8bc6\u522b\u5230\u660e\u786e\u53e0\u52a0\u4fe1\u53f7\uff0c\u4ecd\u8bf7\u4fdd\u5b88\u8ffd\u52a0\u5242\u91cf\u3002")}</div>
+      ${forecastRows.length ? `<div class="combined-line warning"><strong>\u5373\u5c06\u8fbe\u5cf0</strong>${escapeHtml(forecastRows.join("\uff1b"))}</div>` : ""}
+      ${forwardIndexRows.length ? `<div class="combined-line warning"><strong>\u5411\u540e\u66b4\u9732</strong>${escapeHtml(forwardIndexRows.join("\uff1b"))}</div>` : ""}
       ${notableRisks.length ? `<div class="combined-line warning"><strong>\u4f18\u5148\u770b\u8fd9\u4e9b</strong>${escapeHtml(notableRisks.join("\uff1b"))}</div>` : ""}
     `;
     return;
@@ -1487,6 +2036,8 @@ function renderCombinedEffects() {
     <div class="combined-line"><strong>\u4f5c\u7528\u753b\u50cf</strong>${escapeHtml(effectRows.join("\uff1b"))}</div>
     <div class="combined-line"><strong>\u8054\u5408\u4fe1\u53f7</strong>${escapeHtml(signals.length ? signals.join("\uff1b") : "\u672a\u4ece\u5f53\u524d\u672c\u5730\u6807\u7b7e\u8bc6\u522b\u51fa\u660e\u786e\u53e0\u52a0\u4fe1\u53f7\uff1b\u8fd9\u4e0d\u4ee3\u8868\u5b89\u5168\u3002")}</div>
     <div class="combined-line"><strong>\u6a21\u578b\u5f53\u524d\u66b4\u9732</strong>${escapeHtml(exposureRows.length ? `${exposureRows.join("\uff1b")}\uff08\u76f8\u5bf9\u503c\uff0c\u975e\u771f\u5b9e\u8840\u836f\u6d53\u5ea6\uff09` : "\u5c1a\u672a\u8fdb\u5165\u5f53\u524d\u65f6\u95f4\u70b9\u6216\u6a21\u578b\u66b4\u9732\u63a5\u8fd1 0\u3002")}</div>
+    <div class="combined-line"><strong>\u672a\u6765\u5cf0\u503c\u9884\u8b66</strong>${escapeHtml(forecastRows.length ? `${forecastRows.join("\uff1b")}\uff08\u6309\u771f\u5b9e\u7269\u7406\u65f6\u95f4\u524d\u5411\u626b\u63cf\uff09` : "\u672a\u68c0\u51fa\u5c1a\u672a\u8fbe\u5230\u7684\u660e\u663e\u66b4\u9732\u5cf0\u503c\u3002")}</div>
+    <div class="combined-line"><strong>\u5411\u540e\u66b4\u9732\u6307\u6570</strong>${escapeHtml(forwardIndexRows.length ? `${forwardIndexRows.join("\uff1b")}\uff08\u672a\u6765 24h \u771f\u5b9e\u7269\u7406\u65f6\u95f4\u626b\u63cf\uff09` : "\u672a\u68c0\u51fa\u672a\u6765 24h \u7684\u660e\u663e\u5269\u4f59\u66b4\u9732\u3002")}</div>
     ${notableRisks.length ? `<div class="combined-line warning"><strong>\u9ad8\u4f18\u5148\u7ea7\u63d0\u9192</strong>${escapeHtml(notableRisks.join("\uff1b"))}</div>` : ""}
   `;
 }
@@ -2723,6 +3274,15 @@ async function boot() {
   requestAnimationFrame(drawCurve);
 }
 
+
+function togglePmiHelp(open = null) {
+  const dialog = $("pmiHelpDialog");
+  const button = $("pmiHelpButton");
+  if (!dialog) return;
+  const shouldOpen = open === null ? dialog.classList.contains("hidden") : Boolean(open);
+  dialog.classList.toggle("hidden", !shouldOpen);
+  button?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+}
 $("entryForm").addEventListener("submit", (event) => {
   event.preventDefault();
   const selected = $("substanceSelect").value;
@@ -2841,6 +3401,14 @@ $("sourceStatus")?.addEventListener("click", (event) => {
       setSourceMessage(error.message, true);
     });
   }
+});
+$("pmiHelpButton")?.addEventListener("click", () => togglePmiHelp());
+$("pmiHelpClose")?.addEventListener("click", () => togglePmiHelp(false));
+$("pmiHelpDialog")?.addEventListener("click", (event) => {
+  if (event.target === $("pmiHelpDialog")) togglePmiHelp(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") togglePmiHelp(false);
 });
 $("advancedModeToggle")?.addEventListener("change", (event) => setAdvancedMode(event.target.checked));
 $("themeModeSelect")?.addEventListener("change", (event) => setThemeMode(event.target.value));

@@ -16,6 +16,45 @@ from metabolic_safety_etl.schemas import EvidenceFact  # noqa: E402
 
 API_VERSION = "static-drug-api-v1"
 
+CONTENT_GROUPS = {
+    "drug_effect": {
+        "key": "drug_effects",
+        "prefix": "drug-effects/by-substance",
+        "manifest_dir": "drug-effects",
+        "detail_count_key": "drug_effect_count",
+        "policy": "Drug effect rows expose label indications, purpose, pharmacodynamics and ChEMBL mechanism evidence as searchable evidence snippets.",
+    },
+    "pharmacokinetics": {
+        "key": "pharmacokinetics",
+        "prefix": "pharmacokinetics/by-substance",
+        "manifest_dir": "pharmacokinetics",
+        "detail_count_key": "pharmacokinetic_count",
+        "policy": "PK rows expose structured pharmacokinetic values and label excerpts as evidence, not individualized dosing advice.",
+    },
+    "enzyme_relation": {
+        "key": "enzyme_relations",
+        "prefix": "enzyme-relations/by-substance",
+        "manifest_dir": "enzyme-relations",
+        "detail_count_key": "enzyme_relation_count",
+        "policy": "Enzyme rows expose extracted CYP and transporter relations for downstream interaction review.",
+    },
+}
+
+SOURCE_TIER_SCORE = {
+    "Guideline": 6,
+    "Regulatory": 6,
+    "Label": 5,
+    "ManualReview": 5,
+    "CuratedDB": 4,
+    "Literature": 3,
+    "Signal": 2,
+    "Community": 1,
+    "Fixture": 0,
+    "Unknown": 0,
+}
+
+CONFIDENCE_SCORE = {"High": 3, "Medium": 2, "Low": 1, "Unknown": 0}
+
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,11 +141,15 @@ def load_subject_ids(row: sqlite3.Row) -> list[str]:
 
 
 def row_to_fact(row: sqlite3.Row) -> EvidenceFact:
+    claim = load_claim(row["claim_json"])
+    section = str(row["section"] or "")
+    if section and "section" not in claim:
+        claim = {**claim, "section": section}
     return EvidenceFact(
         fact_id=str(row["fact_id"] or ""),
         fact_type=str(row["fact_type"] or ""),
         subject_ids=load_subject_ids(row),
-        claim=load_claim(row["claim_json"]),
+        claim=claim,
         risk_level=str(row["risk_level"] or "Unknown"),
         confidence=str(row["confidence"] or "Unknown"),
         source_tier=str(row["source_tier"] or "Community"),
@@ -185,6 +228,104 @@ def compact_overdose_warning_fact(fact: EvidenceFact) -> dict[str, Any]:
         "section": fact.claim.get("section"),
         "text": html_safe_excerpt(fact.claim.get("overdose_text") or fact.evidence_quote, 1800),
     }
+
+def compact_drug_effect_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    effect_text = claim.get("effect_text") or claim.get("purpose") or claim.get("indication") or ""
+    mechanism = claim.get("mechanism_of_action") or ""
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "section": claim.get("section"),
+        "effect_text": html_safe_excerpt(effect_text, 2200),
+        "mechanism_of_action": html_safe_excerpt(mechanism, 1600),
+        "action_type": claim.get("action_type"),
+        "target": claim.get("target"),
+        "evidence": html_safe_excerpt(fact.evidence_quote, 1200),
+    }
+
+
+def compact_pharmacokinetics_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "section": claim.get("section"),
+        "half_life_hours": claim.get("half_life_hours"),
+        "clearance": claim.get("clearance"),
+        "volume_distribution": claim.get("volume_distribution"),
+        "bioavailability": claim.get("bioavailability"),
+        "text": html_safe_excerpt(claim.get("text_excerpt") or fact.evidence_quote, 1400),
+    }
+
+
+def compact_enzyme_relation_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "section": claim.get("section"),
+        "tag": claim.get("tag"),
+        "enzyme": claim.get("enzyme"),
+        "relation": claim.get("relation"),
+        "text": html_safe_excerpt(fact.evidence_quote, 900),
+    }
+
+
+def compact_content_fact(fact: EvidenceFact) -> dict[str, Any] | None:
+    if fact.fact_type == "drug_effect":
+        row = compact_drug_effect_fact(fact)
+        if row.get("effect_text") or row.get("mechanism_of_action") or row.get("target") or row.get("evidence"):
+            return row
+    if fact.fact_type == "pharmacokinetics":
+        row = compact_pharmacokinetics_fact(fact)
+        if any(row.get(key) not in (None, "") for key in ("half_life_hours", "clearance", "volume_distribution", "bioavailability", "text")):
+            return row
+    if fact.fact_type == "enzyme_relation":
+        row = compact_enzyme_relation_fact(fact)
+        if row.get("tag") or row.get("enzyme") or row.get("text"):
+            return row
+    return None
+
+
+def compact_key(value: Any, limit: int = 700) -> str:
+    return " ".join(str(value or "").lower().split())[:limit]
+
+
+def content_dedupe_key(row: dict[str, Any]) -> str:
+    basis = row.get("mechanism_of_action") or row.get("effect_text") or row.get("text") or row.get("tag") or row.get("fact_id")
+    return compact_key(basis)
+
+
+def content_priority(row: dict[str, Any]) -> tuple[int, int, int, int]:
+    tier = SOURCE_TIER_SCORE.get(str(row.get("source_tier") or "Unknown"), 0)
+    confidence = CONFIDENCE_SCORE.get(str(row.get("confidence") or "Unknown"), 0)
+    mechanism = 1 if row.get("mechanism_of_action") or row.get("target") or row.get("tag") else 0
+    text_size = min(len(str(row.get("effect_text") or row.get("mechanism_of_action") or row.get("text") or "")), 2000)
+    return tier, confidence, mechanism, text_size
+
+
+def add_capped_content_row(bucket: list[dict[str, Any]], seen_keys: set[str], row: dict[str, Any], max_per_subject: int) -> None:
+    key = content_dedupe_key(row)
+    if not key or key in seen_keys:
+        return
+    seen_keys.add(key)
+    bucket.append(row)
+    bucket.sort(key=content_priority, reverse=True)
+    if max_per_subject and len(bucket) > max_per_subject:
+        del bucket[max_per_subject:]
 
 
 def iter_rows(db_path: Path, fact_type: str) -> Iterable[sqlite3.Row]:
@@ -365,6 +506,164 @@ def load_overlay_fact_json_rows(fact_json_paths: list[Path], max_per_subject: in
                 print(f"overlay_fact_json_progress={path} facts={loaded}", flush=True)
         print(f"overlay_fact_json_loaded={path} facts={loaded}", flush=True)
     return dose_by_subject, overdose_by_subject, names
+
+def empty_content_maps() -> dict[str, dict[str, list[dict[str, Any]]]]:
+    return {spec["key"]: {} for spec in CONTENT_GROUPS.values()}
+
+
+def load_content_rows(db_paths: list[Path], max_per_subject: int = 24) -> tuple[dict[str, dict[str, list[dict[str, Any]]]], dict[str, str]]:
+    content_maps = empty_content_maps()
+    names: dict[str, str] = {}
+    seen_by_group: dict[str, dict[str, set[str]]] = {spec["key"]: {} for spec in CONTENT_GROUPS.values()}
+    for db_path in db_paths:
+        if not db_path.exists():
+            continue
+        for fact_type, spec in CONTENT_GROUPS.items():
+            group_key = spec["key"]
+            for row in iter_rows(db_path, fact_type):
+                fact = row_to_fact(row)
+                sid = fact_subject_id(fact)
+                names.setdefault(sid, str(row["name"] or sid))
+                payload = compact_content_fact(fact)
+                if not payload:
+                    continue
+                bucket = content_maps[group_key].setdefault(sid, [])
+                seen_keys = seen_by_group[group_key].setdefault(sid, set())
+                add_capped_content_row(bucket, seen_keys, payload, max_per_subject=max_per_subject)
+    return content_maps, names
+
+
+def load_content_fact_json_rows(fact_json_paths: list[Path], max_per_subject: int = 24) -> tuple[dict[str, dict[str, list[dict[str, Any]]]], dict[str, str]]:
+    content_maps = empty_content_maps()
+    names: dict[str, str] = {}
+    seen_by_group: dict[str, dict[str, set[str]]] = {spec["key"]: {} for spec in CONTENT_GROUPS.values()}
+    for path in fact_json_paths:
+        loaded = 0
+        for fact in iter_fact_json(path, set(CONTENT_GROUPS)):
+            spec = CONTENT_GROUPS.get(fact.fact_type)
+            if not spec:
+                continue
+            sid = fact_subject_id(fact)
+            names.setdefault(sid, sid.replace("_", " ").title())
+            payload = compact_content_fact(fact)
+            if not payload:
+                continue
+            group_key = spec["key"]
+            bucket = content_maps[group_key].setdefault(sid, [])
+            seen_keys = seen_by_group[group_key].setdefault(sid, set())
+            add_capped_content_row(bucket, seen_keys, payload, max_per_subject=max_per_subject)
+            loaded += 1
+            if loaded % 50000 == 0:
+                print(f"content_fact_json_progress={path} facts={loaded}", flush=True)
+        print(f"content_fact_json_loaded={path} facts={loaded}", flush=True)
+    return content_maps, names
+
+
+def merge_content_maps(target: dict[str, dict[str, list[dict[str, Any]]]], incoming: dict[str, dict[str, list[dict[str, Any]]]], max_per_subject: int = 24) -> None:
+    for group_key, subject_map in incoming.items():
+        target_group = target.setdefault(group_key, {})
+        for subject_id, rows in subject_map.items():
+            bucket = target_group.setdefault(subject_id, [])
+            seen_keys = {content_dedupe_key(item) for item in bucket}
+            for row in rows:
+                add_capped_content_row(bucket, seen_keys, row, max_per_subject=max_per_subject)
+
+
+def content_subjects(content_maps: dict[str, dict[str, list[dict[str, Any]]]]) -> set[str]:
+    subjects: set[str] = set()
+    for subject_map in content_maps.values():
+        subjects.update(subject_map)
+    return subjects
+
+
+def update_content_search_details(api_dir: Path, content_maps: dict[str, dict[str, list[dict[str, Any]]]], names: dict[str, str], identities: dict[str, dict[str, Any]]) -> int:
+    search_path = api_dir / "search" / "index.json"
+    search_index = read_json(search_path, [])
+    by_id = {str(item.get("id")): item for item in search_index if item.get("id")}
+    all_subjects = sorted(content_subjects(content_maps))
+    for sid in all_subjects:
+        paths = {
+            "substance": id_path("substances/by-id", sid),
+            "interactions": id_path("interactions/by-substance", sid),
+            "dose_rules": id_path("dose-rules/by-substance", sid),
+            "dose_candidates": id_path("dose-candidates/by-substance", sid),
+            "overdose_warnings": id_path("overdose-warnings/by-substance", sid),
+            "drug_effects": id_path("drug-effects/by-substance", sid),
+            "pharmacokinetics": id_path("pharmacokinetics/by-substance", sid),
+            "enzyme_relations": id_path("enzyme-relations/by-substance", sid),
+        }
+        if sid not in by_id:
+            identity = identities.get(sid, {})
+            by_id[sid] = {
+                "id": sid,
+                "name_zh": identity.get("name_zh"),
+                "name_en": identity.get("name_en") or names.get(sid) or sid.replace("_", " ").title(),
+                "category": identity.get("category") or "DrugLabel",
+                "aliases": identity.get("aliases") or [],
+                "paths": paths,
+            }
+        else:
+            by_id[sid].setdefault("paths", {}).update(paths)
+            if identities.get(sid):
+                by_id[sid]["aliases"] = sorted(set((by_id[sid].get("aliases") or []) + identities[sid].get("aliases", [])), key=str.lower)[:12]
+        detail_path = api_dir / by_id[sid]["paths"]["substance"]
+        detail = read_json(detail_path, {})
+        if not detail:
+            identity = identities.get(sid, {})
+            detail = {
+                "id": sid,
+                "name_zh": identity.get("name_zh"),
+                "name_en": identity.get("name_en") or by_id[sid].get("name_en"),
+                "category": identity.get("category") or by_id[sid].get("category") or "DrugLabel",
+                "aliases": identity.get("aliases") or by_id[sid].get("aliases") or [],
+                "source_summary": identity.get("source_summary") or [],
+                "remote_source": API_VERSION,
+            }
+        detail.setdefault("paths", {}).update(by_id[sid]["paths"])
+        for spec in CONTENT_GROUPS.values():
+            detail[spec["detail_count_key"]] = len(content_maps.get(spec["key"], {}).get(sid, []))
+        detail["remote_source"] = API_VERSION
+        write_json(detail_path, detail)
+    rows = sorted(by_id.values(), key=lambda item: ((item.get("name_zh") or item.get("name_en") or item.get("id") or "").lower(), item.get("id") or ""))
+    write_json(search_path, rows)
+    return len(rows)
+
+
+def export_content_overlay_from_sources(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], max_per_subject: int = 24) -> dict[str, Any]:
+    content_maps, names = load_content_rows(db_paths, max_per_subject=max_per_subject)
+    json_maps, json_names = load_content_fact_json_rows(fact_json_paths, max_per_subject=max_per_subject)
+    merge_content_maps(content_maps, json_maps, max_per_subject=max_per_subject)
+    names.update({key: value for key, value in json_names.items() if key not in names})
+    all_subjects = content_subjects(content_maps)
+    identities = load_identities(db_paths, all_subjects)
+    identities = load_json_identities(fact_json_paths, all_subjects, identities)
+    for fact_type, spec in CONTENT_GROUPS.items():
+        group_key = spec["key"]
+        prefix = spec["prefix"]
+        for sid, rows in sorted(content_maps.get(group_key, {}).items()):
+            if rows:
+                rows.sort(key=content_priority, reverse=True)
+                write_json(api_dir / id_path(prefix, sid), rows)
+    search_count = update_content_search_details(api_dir, content_maps, names, identities)
+    summary: dict[str, Any] = {
+        "generated_from": [str(path) for path in [*db_paths, *fact_json_paths]],
+        "search_substances": search_count,
+        "max_per_substance": max_per_subject or None,
+    }
+    for spec in CONTENT_GROUPS.values():
+        group_key = spec["key"]
+        subject_map = content_maps.get(group_key, {})
+        count = sum(len(rows) for rows in subject_map.values())
+        summary[group_key] = count
+        summary[f"substances_with_{group_key}"] = len(subject_map)
+        write_json(api_dir / spec["manifest_dir"] / "manifest.json", {
+            "generated_from": summary["generated_from"],
+            "records": count,
+            "subjects": len(subject_map),
+            "max_per_substance": max_per_subject or None,
+            "policy": spec["policy"],
+        })
+    return summary
 
 
 def update_search_and_details(api_dir: Path, dose_by_subject: dict[str, list[dict[str, Any]]], overdose_by_subject: dict[str, list[dict[str, Any]]], names: dict[str, str], identities: dict[str, dict[str, Any]]) -> int:
@@ -581,18 +880,18 @@ def update_dose_rule_search_details(api_dir: Path, buckets: dict[str, list[dict[
     write_json(search_path, rows)
 
 
-def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0) -> dict[str, Any]:
+def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0, max_content_per_subject: int = 24) -> dict[str, Any]:
     dose_by_subject, overdose_by_subject, names = load_overlay_rows(db_paths, max_per_subject=max_per_subject)
-    return export_overlay_from_maps(api_dir, db_paths, [], dose_by_subject, overdose_by_subject, names, max_per_subject)
+    return export_overlay_from_maps(api_dir, db_paths, [], dose_by_subject, overdose_by_subject, names, max_per_subject, max_content_per_subject)
 
 
-def export_overlay_from_sources(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], max_per_subject: int = 0) -> dict[str, Any]:
+def export_overlay_from_sources(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], max_per_subject: int = 0, max_content_per_subject: int = 24) -> dict[str, Any]:
     dose_by_subject, overdose_by_subject, names = load_overlay_rows(db_paths, max_per_subject=max_per_subject)
     json_dose_by_subject, json_overdose_by_subject, json_names = load_overlay_fact_json_rows(fact_json_paths, max_per_subject=max_per_subject)
     merge_subject_maps(dose_by_subject, json_dose_by_subject)
     merge_subject_maps(overdose_by_subject, json_overdose_by_subject)
     names.update({key: value for key, value in json_names.items() if key not in names})
-    return export_overlay_from_maps(api_dir, db_paths, fact_json_paths, dose_by_subject, overdose_by_subject, names, max_per_subject)
+    return export_overlay_from_maps(api_dir, db_paths, fact_json_paths, dose_by_subject, overdose_by_subject, names, max_per_subject, max_content_per_subject)
 
 
 def merge_subject_maps(target: dict[str, list[dict[str, Any]]], incoming: dict[str, list[dict[str, Any]]]) -> None:
@@ -608,7 +907,7 @@ def merge_subject_maps(target: dict[str, list[dict[str, Any]]], incoming: dict[s
                 seen.add(fact_id)
 
 
-def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], dose_by_subject: dict[str, list[dict[str, Any]]], overdose_by_subject: dict[str, list[dict[str, Any]]], names: dict[str, str], max_per_subject: int = 0) -> dict[str, Any]:
+def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], dose_by_subject: dict[str, list[dict[str, Any]]], overdose_by_subject: dict[str, list[dict[str, Any]]], names: dict[str, str], max_per_subject: int = 0, max_content_per_subject: int = 24) -> dict[str, Any]:
     all_subjects = set(dose_by_subject) | set(overdose_by_subject)
     identities = load_identities(db_paths, all_subjects)
     identities = load_json_identities(fact_json_paths, all_subjects, identities)
@@ -623,6 +922,7 @@ def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_path
     manifest = read_json(manifest_path, {})
     dataset_version = str(manifest.get("dataset_version") or "overlay")
     dose_rule_overlay = merge_generated_dose_rules(api_dir, db_paths, fact_json_paths, dataset_version, names)
+    content_overlay = export_content_overlay_from_sources(api_dir, db_paths, fact_json_paths, max_per_subject=max_content_per_subject)
     search_count = len(read_json(api_dir / "search" / "index.json", []))
     overlay_manifest = {
         "generated_from": [str(path) for path in [*db_paths, *fact_json_paths]],
@@ -640,9 +940,15 @@ def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_path
     counts["dose_candidates"] = dose_count
     counts["overdose_warnings"] = overdose_count
     counts["dose_rules"] = dose_rule_overlay.get("unique_dose_rules", counts.get("dose_rules", 0))
+    counts["drug_effects"] = content_overlay.get("drug_effects", 0)
+    counts["pharmacokinetics"] = content_overlay.get("pharmacokinetics", 0)
+    counts["enzyme_relations"] = content_overlay.get("enzyme_relations", 0)
     paths = manifest.setdefault("paths", {})
     paths["dose_candidates_by_substance"] = "search index item paths.dose_candidates"
     paths["overdose_warnings_by_substance"] = "search index item paths.overdose_warnings"
+    paths["drug_effects_by_substance"] = "search index item paths.drug_effects"
+    paths["pharmacokinetics_by_substance"] = "search index item paths.pharmacokinetics"
+    paths["enzyme_relations_by_substance"] = "search index item paths.enzyme_relations"
     manifest["dose_candidate_overlay"] = {
         "manifest": "dose-candidates/manifest.json",
         "policy": overlay_manifest["policy"],
@@ -655,8 +961,20 @@ def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_path
         "manifest": "dose-rules/manifest.json",
         "policy": dose_rule_overlay["policy"],
     }
+    manifest["drug_effect_overlay"] = {
+        "manifest": "drug-effects/manifest.json",
+        "policy": CONTENT_GROUPS["drug_effect"]["policy"],
+    }
+    manifest["pharmacokinetics_overlay"] = {
+        "manifest": "pharmacokinetics/manifest.json",
+        "policy": CONTENT_GROUPS["pharmacokinetics"]["policy"],
+    }
+    manifest["enzyme_relation_overlay"] = {
+        "manifest": "enzyme-relations/manifest.json",
+        "policy": CONTENT_GROUPS["enzyme_relation"]["policy"],
+    }
     write_json(manifest_path, manifest)
-    return overlay_manifest | {"search_substances": search_count, "dose_rule_overlay": dose_rule_overlay}
+    return overlay_manifest | {"search_substances": search_count, "dose_rule_overlay": dose_rule_overlay, "content_overlay": content_overlay}
 
 
 def main() -> int:
@@ -665,12 +983,13 @@ def main() -> int:
     parser.add_argument("--structured-db", action="append", default=[])
     parser.add_argument("--fact-json", action="append", default=[], help="EvidenceFact JSON array to stream; can be repeated")
     parser.add_argument("--max-per-substance", type=int, default=0)
+    parser.add_argument("--max-content-per-substance", type=int, default=24, help="Maximum exported effect/PK/enzyme rows per substance; 0 exports all")
     args = parser.parse_args()
     db_paths = [Path(item) for item in args.structured_db]
     fact_json_paths = [Path(item) for item in args.fact_json]
     if not db_paths and not fact_json_paths:
         raise SystemExit("at least one --structured-db or --fact-json is required")
-    summary = export_overlay_from_sources(Path(args.api_dir), db_paths, fact_json_paths, max_per_subject=args.max_per_substance)
+    summary = export_overlay_from_sources(Path(args.api_dir), db_paths, fact_json_paths, max_per_subject=args.max_per_substance, max_content_per_subject=args.max_content_per_substance)
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

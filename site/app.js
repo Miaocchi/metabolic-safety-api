@@ -50,6 +50,9 @@ const ui = {
   doseRules: "\u5242\u91cf\u89c4\u5219",
   doseCandidates: "\u5242\u91cf\u5019\u9009",
   overdoseWarnings: "\u8fc7\u91cf\u8b66\u544a",
+  drugEffects: "\u836f\u6548 / \u4f5c\u7528\u673a\u5236",
+  pharmacokinetics: "PK / \u836f\u4ee3\u7ebf\u7d22",
+  enzymeRelations: "CYP / \u4ee3\u8c22\u9176\u5173\u7cfb",
   sources: "\u6765\u6e90\u6458\u8981",
   loading: "\u8bfb\u53d6\u8be6\u60c5\u4e2d...",
   error: "\u9519\u8bef",
@@ -66,6 +69,9 @@ function apiCacheKey() {
     counts.dose_rules,
     counts.dose_candidates,
     counts.overdose_warnings,
+    counts.drug_effects,
+    counts.pharmacokinetics,
+    counts.enzyme_relations,
   ].filter(Boolean).join("-") || "boot";
 }
 
@@ -185,6 +191,8 @@ function updateStats() {
   $("doseCount").textContent = formatNumber(counts.dose_rules || 0);
   $("candidateCount").textContent = formatNumber(counts.dose_candidates || 0);
   $("overdoseCount").textContent = formatNumber(counts.overdose_warnings || 0);
+  $("effectCount").textContent = formatNumber(counts.drug_effects || 0);
+  $("pkCount").textContent = formatNumber((counts.pharmacokinetics || 0) + (counts.enzyme_relations || 0));
   const sourceCount = state.manifest?.source_library?.sources_count
     || state.manifest?.online_library?.source_library?.sources_count
     || state.sourceIndex?.sources_count
@@ -194,7 +202,7 @@ function updateStats() {
     || state.manifest?.full_package?.zip_bytes
     || 0;
   const packageText = packageBytes ? ` \u00b7 \u5168\u91cf\u5305 ${(packageBytes / 1024 / 1024).toFixed(1)} MB` : "";
-  $("apiMeta").textContent = `\u5df2\u52a0\u8f7d \u00b7 ${formatNumber(counts.substances || state.searchIndex.length)} \u4e2a\u836f\u7269\u5b9e\u4f53 \u00b7 ${formatNumber(counts.interactions || 0)} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${formatNumber(counts.dose_candidates || 0)} \u6761\u5242\u91cf\u5019\u9009 \u00b7 ${formatNumber(counts.overdose_warnings || 0)} \u6761\u8fc7\u91cf\u8b66\u544a${packageText}`;
+  $("apiMeta").textContent = `\u5df2\u52a0\u8f7d \u00b7 ${formatNumber(counts.substances || state.searchIndex.length)} \u4e2a\u836f\u7269\u5b9e\u4f53 \u00b7 ${formatNumber(counts.interactions || 0)} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${formatNumber(counts.drug_effects || 0)} \u6761\u836f\u6548/\u673a\u5236 \u00b7 ${formatNumber(counts.dose_candidates || 0)} \u6761\u5242\u91cf\u5019\u9009 \u00b7 ${formatNumber(counts.overdose_warnings || 0)} \u6761\u8fc7\u91cf\u8b66\u544a${packageText}`;
 }
 
 function scoreItem(item, query) {
@@ -271,13 +279,16 @@ async function selectItem(item) {
   try {
     const detail = await fetchJson(paths.substance);
     const detailPaths = { ...paths, ...(detail.paths || {}) };
-    const [interactions, doseRules, doseCandidates, overdoseWarnings] = await Promise.all([
+    const [interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations] = await Promise.all([
       safeFetch(detailPaths.interactions, { expectedCount: detail.interaction_count || 0 }),
       safeFetch(detailPaths.dose_rules, { expectedCount: detail.dose_rule_count || 0 }),
       safeFetch(detailPaths.dose_candidates, { expectedCount: detail.dose_candidate_count || 0 }),
       safeFetch(detailPaths.overdose_warnings, { expectedCount: detail.overdose_warning_count || 0 }),
+      safeFetch(detailPaths.drug_effects, { expectedCount: detail.drug_effect_count || 0 }),
+      safeFetch(detailPaths.pharmacokinetics, { expectedCount: detail.pharmacokinetic_count || 0 }),
+      safeFetch(detailPaths.enzyme_relations, { expectedCount: detail.enzyme_relation_count || 0 }),
     ]);
-    renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings);
+    renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations);
     const params = new URLSearchParams(window.location.search);
     params.set("id", item.id);
     if (state.query) params.set("q", state.query);
@@ -290,7 +301,7 @@ async function selectItem(item) {
   }
 }
 
-function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings) {
+function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations) {
   $("detailBadge").textContent = detail.id || ui.selected;
   const sortedInteractions = [...interactions]
     .sort((a, b) => (riskRank[b.risk_level] || 0) - (riskRank[a.risk_level] || 0))
@@ -314,7 +325,19 @@ function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseW
       <h4>${ui.identity}</h4>
       <p class="card-meta">${ui.aliases}${html(aliases)}</p>
       <p class="card-meta">${ui.cyp}${html(cyp)}</p>
-      <p class="card-meta">${ui.summary}${formatNumber(detail.interaction_count || sortedInteractions.length)} ${ui.interactions}\uff0c${formatNumber(detail.dose_rule_count || doseRules.length)} ${ui.doseRules}\uff0c${formatNumber(detail.dose_candidate_count || doseCandidates.length)} ${ui.doseCandidates}\uff0c${formatNumber(detail.overdose_warning_count || overdoseWarnings.length)} ${ui.overdoseWarnings}</p>
+      <p class="card-meta">${ui.summary}${formatNumber(detail.drug_effect_count || drugEffects.length)} ${ui.drugEffects}\uff0c${formatNumber(detail.pharmacokinetic_count || pharmacokinetics.length)} ${ui.pharmacokinetics}\uff0c${formatNumber(detail.enzyme_relation_count || enzymeRelations.length)} ${ui.enzymeRelations}\uff0c${formatNumber(detail.interaction_count || sortedInteractions.length)} ${ui.interactions}\uff0c${formatNumber(detail.dose_rule_count || doseRules.length)} ${ui.doseRules}\uff0c${formatNumber(detail.dose_candidate_count || doseCandidates.length)} ${ui.doseCandidates}\uff0c${formatNumber(detail.overdose_warning_count || overdoseWarnings.length)} ${ui.overdoseWarnings}</p>
+    </section>
+    <section class="subsection">
+      <h4>${ui.drugEffects} ${drugEffects.length}</h4>
+      <div class="stack">${renderDrugEffects(drugEffects)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.pharmacokinetics} ${pharmacokinetics.length}</h4>
+      <div class="stack">${renderPharmacokinetics(pharmacokinetics)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.enzymeRelations} ${enzymeRelations.length}</h4>
+      <div class="stack">${renderEnzymeRelations(enzymeRelations)}</div>
     </section>
     <section class="subsection">
       <h4>${ui.overdoseWarnings} ${overdoseWarnings.length}</h4>
@@ -348,6 +371,64 @@ function otherSubstance(row) {
     return row.substance_b_name || row.substance_b_name_en || row.substance_b_id;
   }
   return row.substance_a_name || row.substance_a_name_en || row.substance_a_id;
+}
+
+function sourceLink(row) {
+  const href = safeHttpUrl(row.source_url);
+  return href ? ` \u00b7 <a href="${html(href)}" target="_blank" rel="noopener noreferrer">\u6765\u6e90</a>` : "";
+}
+
+function renderDrugEffects(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0\u5df2\u7ed3\u6784\u5316\u7684\u836f\u6548\u3001\u9002\u5e94\u75c7\u6216\u4f5c\u7528\u673a\u5236\u8bb0\u5f55\u3002</div>';
+  return rows.slice(0, 60).map((row) => {
+    const title = row.mechanism_of_action ? "\u4f5c\u7528\u673a\u5236" : row.section || "\u836f\u6548\u8bc1\u636e";
+    const body = row.mechanism_of_action || row.effect_text || row.evidence || "";
+    const target = row.target ? `\u9776\u70b9\uff1a${html(row.target)}` : "";
+    const action = row.action_type ? `\u4f5c\u7528\u7c7b\u578b\uff1a${html(row.action_type)}` : "";
+    return `
+      <article class="effect-card">
+        <div class="card-head"><strong>${html(title)}</strong><span class="badge">${html(row.confidence || "Unknown")}</span></div>
+        <div class="card-meta">${html(row.source_name || "Unknown source")} \u00b7 ${html(row.source_tier || "Unknown")}${sourceLink(row)}</div>
+        ${target || action ? `<div class="card-meta">${[target, action].filter(Boolean).join(" \u00b7 ")}</div>` : ""}
+        <div class="card-meta effect-text">${html(body || "\u65e0\u6587\u672c")}</div>
+      </article>
+    `;
+  }).join("") + (rows.length > 60 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 60 \u6761\uff0c\u5b8c\u6574\u8bb0\u5f55\u8bf7\u8bfb\u53d6\u5bf9\u5e94 drug_effects JSON\u3002</div>` : "");
+}
+
+function renderPharmacokinetics(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0\u5df2\u7ed3\u6784\u5316\u7684 PK \u8bb0\u5f55\u3002</div>';
+  return rows.slice(0, 40).map((row) => {
+    const values = [
+      row.half_life_hours !== null && row.half_life_hours !== undefined ? `\u534a\u8870\u671f\uff1a${html(formatHours(row.half_life_hours))}` : "",
+      row.clearance ? `\u6e05\u9664\u7387\uff1a${html(row.clearance)}` : "",
+      row.volume_distribution ? `Vd\uff1a${html(row.volume_distribution)}` : "",
+      row.bioavailability ? `F\uff1a${html(row.bioavailability)}` : "",
+    ].filter(Boolean).join(" \u00b7 ");
+    return `
+      <article class="pk-card">
+        <div class="card-head"><strong>${html(row.section || "PK")}</strong><span class="badge">${html(row.confidence || "Unknown")}</span></div>
+        <div class="card-meta">${html(row.source_name || "Unknown source")} \u00b7 ${html(row.source_tier || "Unknown")}${sourceLink(row)}</div>
+        ${values ? `<div class="card-meta">${values}</div>` : ""}
+        ${row.text ? `<div class="card-meta">${html(row.text)}</div>` : ""}
+      </article>
+    `;
+  }).join("") + (rows.length > 40 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 40 \u6761 PK \u7ebf\u7d22\u3002</div>` : "");
+}
+
+function renderEnzymeRelations(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0 CYP / \u4ee3\u8c22\u9176\u5173\u7cfb\u8bb0\u5f55\u3002</div>';
+  return rows.slice(0, 50).map((row) => {
+    const title = row.tag || [row.enzyme, row.relation].filter(Boolean).join("_") || "enzyme_relation";
+    return `
+      <article class="pk-card enzyme">
+        <div class="card-head"><strong>${html(title)}</strong><span class="badge">${html(row.confidence || "Unknown")}</span></div>
+        <div class="card-meta">${html(row.source_name || "Unknown source")} \u00b7 ${html(row.source_tier || "Unknown")}${sourceLink(row)}</div>
+        <div class="card-meta">${html([row.enzyme, row.relation].filter(Boolean).join(" / ") || row.text || "\u65e0\u6587\u672c")}</div>
+        ${row.text ? `<div class="card-meta">${html(row.text)}</div>` : ""}
+      </article>
+    `;
+  }).join("") + (rows.length > 50 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 50 \u6761\u9176\u5173\u7cfb\u7ebf\u7d22\u3002</div>` : "");
 }
 
 function renderInteractions(rows) {
@@ -450,7 +531,7 @@ function bindEvents() {
     $("searchInput").value = "";
     $("detailBadge").textContent = "\u672a\u9009\u62e9";
     $("detail").className = "detail-card empty";
-    $("detail").textContent = "\u8bf7\u9009\u62e9\u836f\u7269\u67e5\u770b\u6765\u6e90\u3001PK \u7ebf\u7d22\u3001\u76f8\u4e92\u4f5c\u7528\u3001\u5242\u91cf\u5019\u9009\u548c\u8fc7\u91cf\u8b66\u544a\u3002";
+    $("detail").textContent = "\u8bf7\u9009\u62e9\u836f\u7269\u67e5\u770b\u836f\u6548/\u673a\u5236\u3001PK \u7ebf\u7d22\u3001CYP \u5173\u7cfb\u3001\u76f8\u4e92\u4f5c\u7528\u3001\u5242\u91cf\u5019\u9009\u548c\u8fc7\u91cf\u8b66\u544a\u3002";
     history.replaceState(null, "", window.location.pathname);
     renderResults();
   });

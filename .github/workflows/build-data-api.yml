@@ -221,7 +221,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python tools/export_dose_overlay.py             --api-dir public/api             --fact-json .cache/metabolic-source-facts/openfda_label/evidence_facts.json             --fact-json .cache/metabolic-source-facts/dailymed/evidence_facts.json             --fact-json .cache/metabolic-source-facts/chembl/evidence_facts.json             --fact-json .cache/metabolic-source-facts/foodrugs/evidence_facts.json             --fact-json .cache/metabolic-source-facts/onsides/evidence_facts.json             --fact-json .cache/metabolic-source-facts/pharmgkb/evidence_facts.json
+          python tools/export_dose_overlay.py \
+            --api-dir public/api \
+            --max-content-per-substance 24 \
+            --fact-json .cache/metabolic-source-facts/openfda_label/evidence_facts.json \
+            --fact-json .cache/metabolic-source-facts/dailymed/evidence_facts.json \
+            --fact-json .cache/metabolic-source-facts/chembl/evidence_facts.json \
+            --fact-json .cache/metabolic-source-facts/foodrugs/evidence_facts.json \
+            --fact-json .cache/metabolic-source-facts/onsides/evidence_facts.json \
+            --fact-json .cache/metabolic-source-facts/pharmgkb/evidence_facts.json
 
       - name: Copy search web UI
         shell: bash
