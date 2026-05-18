@@ -415,6 +415,8 @@ async function remotePathsForId(id) {
     substance: `substances/by-id/${encodeURIComponent(id)}.json`,
     interactions: `interactions/by-substance/${encodeURIComponent(id)}.json`,
     dose_rules: `dose-rules/by-substance/${encodeURIComponent(id)}.json`,
+    dose_candidates: `dose-candidates/by-substance/${encodeURIComponent(id)}.json`,
+    overdose_warnings: `overdose-warnings/by-substance/${encodeURIComponent(id)}.json`,
   };
 }
 
@@ -515,7 +517,7 @@ async function testRemoteApiConnection() {
     const counts = manifest.counts || {};
     const version = manifest.api_version || "static API";
     const enabledNote = state.remoteConfig.enabled ? "\u5df2\u542f\u7528" : "\u672a\u542f\u7528\uff0c\u4ec5\u5b8c\u6210\u8fde\u63a5\u6d4b\u8bd5";
-    setRemoteApiStatus(`\u8fde\u63a5\u6210\u529f\uff1a${version} \u00b7 ${counts.substances || 0} \u4e2a\u7269\u8d28 \u00b7 ${counts.interactions || 0} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${enabledNote}`, "ok");
+    setRemoteApiStatus(`\u8fde\u63a5\u6210\u529f\uff1a${version} \u00b7 ${formatNumber(counts.substances || 0, 0)} \u4e2a\u7269\u8d28 \u00b7 ${formatNumber(counts.interactions || 0, 0)} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${formatNumber(counts.dose_rules || 0, 0)} \u6761\u5242\u91cf\u89c4\u5219 \u00b7 ${formatNumber(counts.dose_candidates || 0, 0)} \u6761\u5242\u91cf\u5019\u9009 \u00b7 ${formatNumber(counts.overdose_warnings || 0, 0)} \u6761\u8fc7\u91cf\u8b66\u544a \u00b7 ${enabledNote}`, "ok");
   } catch (error) {
     setRemoteApiStatus(error.message || String(error), "error");
   }
@@ -2606,7 +2608,7 @@ async function showRemoteFullLibrary() {
   const zipBytes = packageDetail?.files?.zip_bytes || fullPackage.zip_bytes || 0;
   const sourceCount = sourceLibrary.sources_count || packageDetail?.source_library?.sources_count || 0;
   const factCount = sourceLibrary.facts_count || packageDetail?.source_library?.facts_count || 0;
-  const message = `\u7ebf\u4e0a\u5168\u91cf\u5e93\u5df2\u5c31\u7eea\uff1a${formatNumber(counts.substances || 0, 0)} \u4e2a\u7269\u8d28\uff0c${formatNumber(counts.interactions || 0, 0)} \u6761\u76f8\u4e92\u4f5c\u7528\uff0c${formatNumber(counts.dose_rules || 0, 0)} \u6761\u5242\u91cf\u89c4\u5219\uff1b\u6e90\u5c42 ${formatNumber(sourceCount, 0)} \u4e2a\uff0c\u8bc1\u636e\u4e8b\u5b9e ${formatNumber(factCount, 0)} \u6761\uff1b\u5168\u91cf\u5305 ${formatBytes(zipBytes)}\u3002\u672c\u5730\u4ecd\u4fdd\u7559\u539f\u672c\u8f7b\u91cf\u65b9\u6848\uff0c\u4e0d\u4f1a\u81ea\u52a8\u4e0b\u8f7d\u5168\u91cf\u5305\u3002`;
+  const message = `\u7ebf\u4e0a\u5168\u91cf\u5e93\u5df2\u5c31\u7eea\uff1a${formatNumber(counts.substances || 0, 0)} \u4e2a\u7269\u8d28\uff0c${formatNumber(counts.interactions || 0, 0)} \u6761\u76f8\u4e92\u4f5c\u7528\uff0c${formatNumber(counts.dose_rules || 0, 0)} \u6761\u5242\u91cf\u89c4\u5219\uff0c${formatNumber(counts.dose_candidates || 0, 0)} \u6761\u5242\u91cf\u5019\u9009\uff0c${formatNumber(counts.overdose_warnings || 0, 0)} \u6761\u8fc7\u91cf\u8b66\u544a\uff1b\u6e90\u5c42 ${formatNumber(sourceCount, 0)} \u4e2a\uff0c\u8bc1\u636e\u4e8b\u5b9e ${formatNumber(factCount, 0)} \u6761\uff1b\u5168\u91cf\u5305 ${formatBytes(zipBytes)}\u3002dose_candidate / overdose_warning \u662f\u8bc1\u636e\u5019\u9009\uff0c\u4e0d\u7b49\u4e8e\u53ef\u76f4\u63a5\u62a5\u8b66\u7684 dose_rule\u3002\u672c\u5730\u4ecd\u4fdd\u7559\u539f\u672c\u8f7b\u91cf\u65b9\u6848\uff0c\u4e0d\u4f1a\u81ea\u52a8\u4e0b\u8f7d\u5168\u91cf\u5305\u3002`;
   setSourceMessage(message, false);
   setRemoteApiStatus(message, "ok");
 }

@@ -560,7 +560,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         if not target.exists() or not target.is_file():
-            if relative.startswith(("interactions/by-substance/", "dose-rules/by-substance/")):
+            if relative.startswith(("interactions/by-substance/", "dose-rules/by-substance/", "dose-candidates/by-substance/", "overdose-warnings/by-substance/")):
                 self._send_json([])
                 return
             self.send_error(404)
