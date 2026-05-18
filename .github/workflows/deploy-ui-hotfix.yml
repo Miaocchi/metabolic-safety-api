@@ -1,0 +1,61 @@
+﻿name: Deploy Static API UI Hotfix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages-ui-hotfix"
+  cancel-in-progress: true
+
+jobs:
+  deploy-ui:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download latest successful API artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "Build Static Drug API" --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "No successful Build Static Drug API run found" >&2
+            exit 1
+          fi
+          echo "Using Build Static Drug API run: $run_id"
+          mkdir -p previous-pages public
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name github-pages --dir previous-pages
+          tar -xf previous-pages/artifact.tar -C public
+
+      - name: Replace search UI only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R site/. public/
+          test -f public/api/manifest.json
+          test -f public/index.html
+          test -f public/app.js
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
