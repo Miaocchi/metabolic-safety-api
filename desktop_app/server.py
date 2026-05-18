@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -20,7 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from metabolic_safety_etl.adapters.chembl import fetch_chembl_facts  # noqa: E402
 from metabolic_safety_etl.adapters.dailymed import fetch_dailymed_facts  # noqa: E402
 from metabolic_safety_etl.adapters.ddinter import find_ddinter_csvs, load_ddinter_csv_facts  # noqa: E402
-from metabolic_safety_etl.adapters.openfda import fetch_label_facts  # noqa: E402
+from metabolic_safety_etl.adapters.openfda import fetch_event_signal_facts, fetch_label_facts  # noqa: E402
 from metabolic_safety_etl.adapters.label_bulk import fetch_dailymed_label_manifest, fetch_openfda_label_manifest  # noqa: E402
 from metabolic_safety_etl.adapters.psychonautwiki import fetch_substance_facts  # noqa: E402
 from metabolic_safety_etl.adapters.rxnav import fetch_rxnav_facts  # noqa: E402
@@ -32,6 +33,7 @@ from metabolic_safety_etl.raw_sources import load_raw_source_facts  # noqa: E402
 from metabolic_safety_etl.source_catalog import source_status_dicts  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
+REMOTE_STATIC_API = ROOT / "build" / "static_api_preview"
 DATA = ROOT / "data"
 BUILD = ROOT / "build"
 SEED_DB = BUILD / "app_seed.sqlite"
@@ -46,11 +48,16 @@ SOURCE_UPDATE_META = BUILD / "source_update_meta.json"
 DATASET_VERSION = "2026-05-17"
 REBUILD_LOCK = threading.Lock()
 JOBS: dict[str, dict] = {}
+FAERS_SIGNAL_CACHE: dict[str, tuple[float, list]] = {}
+FAERS_SIGNAL_CACHE_SECONDS = 6 * 60 * 60
+FAERS_SIGNAL_LOCK = threading.Lock()
+SEVERE_FAERS_REACTIONS = {"DEATH", "RESPIRATORY DEPRESSION", "COMA", "LOSS OF CONSCIOUSNESS", "SEROTONIN SYNDROME", "QT PROLONGATION", "TORSADES DE POINTES", "OVERDOSE"}
 
 RISK_ORDER_SQL = "CASE risk_level WHEN 'Contraindicated' THEN 5 WHEN 'Major' THEN 4 WHEN 'Moderate' THEN 3 WHEN 'Minor' THEN 2 WHEN 'NoKnownClinicalSignificance' THEN 1 ELSE 0 END"
 
 DIRECT_PUBLIC_SOURCES = {
     "openfda_label": {"label": "openFDA Drug Label", "requires_term": True, "default_limit": 3, "max_limit": 10},
+    "openfda_event": {"label": "openFDA FAERS adverse event", "requires_term": True, "default_limit": 5, "max_limit": 15},
     "dailymed": {"label": "DailyMed SPL", "requires_term": True, "default_limit": 5, "max_limit": 20},
     "rxnav": {"label": "RxNav / RxNorm", "requires_term": True, "default_limit": 12, "max_limit": 30},
     "chembl": {"label": "ChEMBL", "requires_term": True, "default_limit": 8, "max_limit": 20},
@@ -60,12 +67,14 @@ PUBLIC_SYNC_SOURCE_LIMITS = {
     "rxnav": 2,
     "chembl": 2,
     "openfda_label": 1,
+    "openfda_event": 1,
     "dailymed": 1,
 }
 PUBLIC_SYNC_TIMEOUTS = {
     "rxnav": 8,
     "chembl": 8,
     "openfda_label": 6,
+    "openfda_event": 8,
     "dailymed": 6,
 }
 PUBLIC_SYNC_MAX_WORKERS = 8
@@ -117,11 +126,13 @@ PHARMGKB_BULK_FILES = [
 
 SOURCE_NAME_TO_KEY = {
     "openFDA drug label": "openfda_label",
+    "openFDA FAERS adverse event": "openfda_event",
     "DailyMed SPL": "dailymed",
     "RxNav / RxNorm": "rxnav",
     "ChEMBL": "chembl",
     "PsychonautWiki GraphQL": "psychonautwiki",
 }
+
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -142,6 +153,9 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+        if parsed.path == "/remote-api" or parsed.path.startswith("/remote-api/"):
+            self._serve_remote_static(parsed.path)
+            return
         if parsed.path == "/api/seed":
             self._send_json(self._read_seed())
             return
@@ -150,6 +164,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/check":
             self._send_json(self._check_interactions(params))
+            return
+        if parsed.path == "/api/adverse-signals":
+            self._send_json(self._adverse_signals(params))
             return
         if parsed.path == "/api/sources":
             self._send_json(self._sources_payload())
@@ -317,6 +334,76 @@ class Handler(SimpleHTTPRequestHandler):
             rows = conn.execute(sql, ids + ids).fetchall()
         return {"items": [self._interaction_row(row) for row in rows]}
 
+    def _adverse_signals(self, params: dict[str, list[str]]) -> dict:
+        raw_ids = []
+        for value in params.get("ids", []):
+            raw_ids.extend(part for part in value.split(",") if part)
+        ids = sorted({item.strip() for item in raw_ids if item.strip()})
+        if not ids:
+            return {"items": [], "errors": []}
+        limit = min(max(_int_param(params, "limit", 3), 1), 8)
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, name_zh, name_en, category, identifiers_json
+                FROM substances_core
+                WHERE id IN ({placeholders})
+                ORDER BY COALESCE(name_zh, name_en), id
+                """,
+                ids,
+            ).fetchall()
+
+        items = []
+        errors = []
+        for row in rows:
+            try:
+                item = self._faers_signal_for_substance(row, limit)
+                if item:
+                    items.append(item)
+            except Exception as exc:
+                errors.append({"id": row["id"], "error": type(exc).__name__, "message": str(exc)})
+        return {"items": items, "errors": errors}
+
+    def _faers_signal_for_substance(self, row: sqlite3.Row, limit: int) -> dict | None:
+        substance_id = row["id"]
+        substance_name = row["name_zh"] or row["name_en"] or substance_id
+        for term in faers_query_terms(row):
+            facts = fetch_faers_signal_facts_cached(term, limit)
+            if not facts:
+                continue
+            reactions = []
+            for fact in facts[:limit]:
+                claim = fact.claim
+                reactions.append(
+                    {
+                        "reaction": claim.get("reaction"),
+                        "label": claim.get("reaction_label_zh") or claim.get("reaction"),
+                        "count": claim.get("count", 0),
+                    }
+                )
+            readable = "；".join(
+                f"{reaction['label']}（{reaction['reaction']}）{int(reaction.get('count') or 0):,} 例"
+                for reaction in reactions
+            )
+            risk_level = "Moderate" if any(str(reaction.get("reaction") or "").upper() in SEVERE_FAERS_REACTIONS for reaction in reactions) else "Minor"
+            return {
+                "risk_kind": "signal",
+                "signal_id": f"faers_{substance_id}_{stable_text_hash(term)}",
+                "substance_id": substance_id,
+                "substance_name": substance_name,
+                "query_term": term,
+                "reactions": reactions,
+                "risk_level": risk_level,
+                "confidence": "Low",
+                "source_tier": "Signal",
+                "interaction_type": "adverse_event_signal",
+                "source_name": "openFDA FAERS adverse event",
+                "source_url": facts[0].source_url,
+                "note": f"FAERS 自发不良事件报告中，{substance_name}（按 {term} 检索）常见共报告事件：{readable}。这是药物警戒候选信号，不代表因果关系、发生率或已确认联用冲突；用于提醒记录症状并必要时咨询医生/药师。",
+            }
+        return None
+
     def _sources_payload(self) -> dict:
         meta = self._read_json(SOURCE_UPDATE_META)
         if not isinstance(meta, dict):
@@ -464,6 +551,27 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_remote_static(self, request_path: str) -> None:
+        relative = request_path.removeprefix("/remote-api").lstrip("/") or "manifest.json"
+        target = (REMOTE_STATIC_API / relative).resolve()
+        try:
+            target.relative_to(REMOTE_STATIC_API.resolve())
+        except ValueError:
+            self.send_error(404)
+            return
+        if not target.exists() or not target.is_file():
+            if relative.startswith(("interactions/by-substance/", "dose-rules/by-substance/")):
+                self._send_json([])
+                return
+            self.send_error(404)
+            return
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", self.guess_type(str(target)))
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
 
 def _int_param(params: dict[str, list[str]], key: str, default: int) -> int:
     try:
@@ -485,6 +593,8 @@ def fetch_direct_public_facts(key: str, term: str, limit: int, timeout: int | No
     timeout_value = timeout or 30
     if key == "openfda_label":
         return fetch_label_facts(term, limit, timeout=timeout_value)
+    if key == "openfda_event":
+        return fetch_event_signal_facts(term, limit, timeout=timeout_value)
     if key == "dailymed":
         return fetch_dailymed_facts(term, limit, timeout=timeout_value)
     if key == "rxnav":
@@ -494,6 +604,95 @@ def fetch_direct_public_facts(key: str, term: str, limit: int, timeout: int | No
     if key == "psychonautwiki":
         return fetch_substance_facts(limit=limit, offset=0)
     raise ValueError(f"Unsupported source: {key}")
+
+
+def fetch_faers_signal_facts_cached(term: str, limit: int):
+    normalized = term.strip()
+    if not normalized:
+        return []
+    key = f"{normalized.lower()}::{int(limit)}"
+    now = time.time()
+    with FAERS_SIGNAL_LOCK:
+        cached = FAERS_SIGNAL_CACHE.get(key)
+        if cached and now - cached[0] < FAERS_SIGNAL_CACHE_SECONDS:
+            return list(cached[1])
+    facts = fetch_event_signal_facts(normalized, limit=limit, timeout=8)
+    with FAERS_SIGNAL_LOCK:
+        FAERS_SIGNAL_CACHE[key] = (now, list(facts))
+    return facts
+
+
+def faers_query_terms(row: sqlite3.Row) -> list[str]:
+    identifiers = {}
+    try:
+        identifiers = json.loads(row["identifiers_json"] or "{}")
+    except Exception:
+        identifiers = {}
+    candidates: list[str] = []
+    for value in (row["name_en"], identifiers.get("rxnorm_synonym"), row["id"]):
+        candidates.extend(split_candidate_terms(value))
+    aliases = identifiers.get("aliases")
+    if isinstance(aliases, str):
+        for alias in aliases.split("|"):
+            candidates.extend(split_candidate_terms(alias))
+    elif isinstance(aliases, list):
+        for alias in aliases:
+            candidates.extend(split_candidate_terms(alias))
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        term = clean_faers_query_term(candidate)
+        if not term:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        terms.append(term)
+    return terms[:4]
+
+
+def split_candidate_terms(value: object) -> list[str]:
+    if value is None:
+        return []
+    text = str(value).replace("_", " ").strip()
+    if not text:
+        return []
+    parts = [text]
+    if " / " in text:
+        parts.extend(part.strip() for part in text.split(" / "))
+    if "|" in text:
+        parts.extend(part.strip() for part in text.split("|"))
+    return parts
+
+
+def clean_faers_query_term(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\[[^\]]+\]|[{}]", " ", text)
+    text = re.sub(r"\b\d+(?:\.\d+)?\s*(?:MG|MCG|UG|G|ML|%)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\b(?:ORAL|TABLET|TABLETS|CAPSULE|CAPSULES|SOLUTION|TOPICAL|LOTION|PACK|KIT|SPRAY|INJECTION|EXTENDED|RELEASE|DELAYED|CHEWABLE|FILM|COATED|LIQUID|SYRUP|SUSPENSION)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s+", " ", text).strip(" -/,()")
+    if not re.search(r"[A-Za-z]", text):
+        return ""
+    if re.search(r"\d", text):
+        return ""
+    if any(marker in text for marker in ("/", "{", "}")):
+        return ""
+    if len(text) < 3 or len(text) > 60:
+        return ""
+    return text
+
+
+def stable_text_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 def append_optional_facts(facts) -> int:
     OPTIONAL_DIR.mkdir(parents=True, exist_ok=True)

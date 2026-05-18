@@ -3,24 +3,12 @@ name: Build Static Drug API
 on:
   workflow_dispatch:
     inputs:
-      stream_raw_sources:
-        description: "Download remote bulk packages one part at a time during this run"
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
-      raw_stream_sources:
-        description: "Comma-separated bulk sources"
-        required: true
-        default: "openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb"
       raw_max_records:
-        description: "Max parsed records per raw source; 0 means no cap"
+        description: "Debug cap per source; 0 means full source"
         required: true
         default: "0"
       raw_stream_max_parts:
-        description: "Max downloaded parts per raw source; 0 means all parts"
+        description: "Debug cap per source; 0 means all upstream parts"
         required: true
         default: "0"
   schedule:
@@ -43,18 +31,102 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
+env:
+  ALL_BULK_SOURCES: openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb
+
 jobs:
+  source-layer-cache:
+    name: Build/cache source layer (${{ matrix.source }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - openfda_label
+          - dailymed
+          - chembl
+          - foodrugs
+          - onsides
+          - pharmgkb
+    env:
+      RAW_MAX_RECORDS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_max_records || '0' }}
+      RAW_STREAM_MAX_PARTS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_stream_max_parts || '0' }}
+      SOURCE_CACHE_DIR: .cache/metabolic-source-facts/${{ matrix.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Resolve upstream manifest fingerprint
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/manifests"
+          python -m metabolic_safety_etl.cli remote-manifests             --sources "${{ matrix.source }}"             --out "${RUNNER_TEMP}/manifests/${{ matrix.source }}.json"
+          fingerprint=$(python - <<'PY'
+          import json, os
+          source = os.environ["SOURCE"]
+          path = os.environ["MANIFEST_PATH"]
+          with open(path, encoding="utf-8") as handle:
+              payload = json.load(handle)
+          print(payload["sources"][source]["fingerprint"])
+          PY
+          )
+          echo "fingerprint=${fingerprint}" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=${fingerprint}"
+        env:
+          SOURCE: ${{ matrix.source }}
+          MANIFEST_PATH: ${{ runner.temp }}/manifests/${{ matrix.source }}.json
+
+      - name: Restore structured source layer cache
+        id: source-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SOURCE_CACHE_DIR }}
+          key: metabolic-source-facts-${{ runner.os }}-${{ matrix.source }}-${{ steps.manifest.outputs.fingerprint }}-${{ hashFiles('src/metabolic_safety_etl/**', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+
+      - name: Build structured source layer when upstream changed
+        if: ${{ steps.source-cache.outputs.cache-hit != 'true' || hashFiles(format('.cache/metabolic-source-facts/{0}/evidence_facts.json', matrix.source)) == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${SOURCE_CACHE_DIR}"
+          mkdir -p "${SOURCE_CACHE_DIR}"
+          python -m metabolic_safety_etl.cli build-remote-source-facts             --sources "${{ matrix.source }}"             --out "${SOURCE_CACHE_DIR}/evidence_facts.json"             --summary-out "${SOURCE_CACHE_DIR}/summary.json"             --temp-dir "${RUNNER_TEMP}/metabolic-raw-stream/${{ matrix.source }}"             --raw-max-records "${RAW_MAX_RECORDS}"             --raw-stream-max-parts "${RAW_STREAM_MAX_PARTS}"
+
+      - name: Print source layer status
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "${SOURCE_CACHE_DIR}/summary.json" ]]; then
+            python -m json.tool "${SOURCE_CACHE_DIR}/summary.json" | head -200
+          fi
+          if [[ -f "${SOURCE_CACHE_DIR}/evidence_facts.json" ]]; then
+            bytes=$(wc -c < "${SOURCE_CACHE_DIR}/evidence_facts.json")
+            echo "source_layer=${{ matrix.source }} bytes=${bytes}"
+          fi
+
   build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    needs: source-layer-cache
+    env:
+      RAW_MAX_RECORDS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_max_records || '0' }}
+      RAW_STREAM_MAX_PARTS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_stream_max_parts || '0' }}
+    if: ${{ always() && !cancelled() && needs.source-layer-cache.result == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    env:
-      STREAM_RAW_SOURCES: ${{ github.event_name == 'workflow_dispatch' && inputs.stream_raw_sources || 'true' }}
-      RAW_STREAM_SOURCES: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_stream_sources || 'openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb' }}
-      RAW_MAX_RECORDS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_max_records || '0' }}
-      RAW_STREAM_MAX_PARTS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_stream_max_parts || '0' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,35 +143,78 @@ jobs:
       - name: Test ETL
         run: python -m unittest discover -s tests
 
-      - name: Print raw source streaming configuration
+      - name: Resolve all upstream manifest fingerprints
+        id: manifests
         shell: bash
         run: |
-          echo "STREAM_RAW_SOURCES=${STREAM_RAW_SOURCES}"
-          echo "RAW_STREAM_SOURCES=${RAW_STREAM_SOURCES}"
-          echo "RAW_MAX_RECORDS=${RAW_MAX_RECORDS}"
-          echo "RAW_STREAM_MAX_PARTS=${RAW_STREAM_MAX_PARTS}"
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/manifests"
+          python -m metabolic_safety_etl.cli remote-manifests             --sources "${ALL_BULK_SOURCES}"             --out "${RUNNER_TEMP}/manifests/all.json"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          path = os.path.join(os.environ["RUNNER_TEMP"], "manifests", "all.json")
+          with open(path, encoding="utf-8") as handle:
+              payload = json.load(handle)
+          for source, row in payload["sources"].items():
+              print(f"{source}={row['fingerprint']}")
+          PY
+
+      - name: Restore openFDA source layer
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/metabolic-source-facts/openfda_label
+          key: metabolic-source-facts-${{ runner.os }}-openfda_label-${{ steps.manifests.outputs.openfda_label }}-${{ hashFiles('src/metabolic_safety_etl/**', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          fail-on-cache-miss: true
+
+      - name: Restore DailyMed source layer
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/metabolic-source-facts/dailymed
+          key: metabolic-source-facts-${{ runner.os }}-dailymed-${{ steps.manifests.outputs.dailymed }}-${{ hashFiles('src/metabolic_safety_etl/**', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          fail-on-cache-miss: true
+
+      - name: Restore ChEMBL source layer
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/metabolic-source-facts/chembl
+          key: metabolic-source-facts-${{ runner.os }}-chembl-${{ steps.manifests.outputs.chembl }}-${{ hashFiles('src/metabolic_safety_etl/**', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          fail-on-cache-miss: true
+
+      - name: Restore FooDrugs source layer
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/metabolic-source-facts/foodrugs
+          key: metabolic-source-facts-${{ runner.os }}-foodrugs-${{ steps.manifests.outputs.foodrugs }}-${{ hashFiles('src/metabolic_safety_etl/**', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          fail-on-cache-miss: true
+
+      - name: Restore OnSIDES source layer
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/metabolic-source-facts/onsides
+          key: metabolic-source-facts-${{ runner.os }}-onsides-${{ steps.manifests.outputs.onsides }}-${{ hashFiles('src/metabolic_safety_etl/**', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          fail-on-cache-miss: true
+
+      - name: Restore PharmGKB source layer
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/metabolic-source-facts/pharmgkb
+          key: metabolic-source-facts-${{ runner.os }}-pharmgkb-${{ steps.manifests.outputs.pharmgkb }}-${{ hashFiles('src/metabolic_safety_etl/**', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          fail-on-cache-miss: true
+
+      - name: Verify all structured source layers are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source in openfda_label dailymed chembl foodrugs onsides pharmgkb; do
+            test -s ".cache/metabolic-source-facts/${source}/evidence_facts.json"
+            echo "ready ${source} $(wc -c < ".cache/metabolic-source-facts/${source}/evidence_facts.json") bytes"
+          done
 
       - name: Build fused seed database and static API
         shell: bash
         run: |
           set -euo pipefail
-          raw_args=()
-          if [[ "${STREAM_RAW_SOURCES}" == "true" ]]; then
-            raw_args+=(--stream-raw-sources)
-            raw_args+=(--raw-stream-sources "${RAW_STREAM_SOURCES}")
-            raw_args+=(--raw-stream-max-parts "${RAW_STREAM_MAX_PARTS}")
-            raw_args+=(--raw-stream-temp-dir "${RUNNER_TEMP}/metabolic-raw-stream")
-          fi
-          python -m metabolic_safety_etl.cli build-public-api \
-            --ddinter-dir data/raw/ddinter \
-            --out build \
-            --api-out public/api \
-            --max-public-terms 120 \
-            --public-limit 2 \
-            --public-workers 8 \
-            --psychonautwiki-pages 3 \
-            --raw-max-records "${RAW_MAX_RECORDS}" \
-            "${raw_args[@]}"
+          python -m metabolic_safety_etl.cli build-public-api             --ddinter-dir data/raw/ddinter             --out build             --api-out public/api             --skip-raw-sources             --extra-facts .cache/metabolic-source-facts             --max-public-terms 120             --public-limit 2             --public-workers 8             --psychonautwiki-pages 3
 
       - name: Copy search web UI
         shell: bash

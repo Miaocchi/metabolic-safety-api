@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from metabolic_safety_etl.raw_sources import dailymed_xml_facts, load_openfda_bulk_facts, load_remote_raw_source_facts
+from metabolic_safety_etl.raw_sources import dailymed_xml_facts, load_dailymed_bulk_facts, load_openfda_bulk_facts, load_remote_raw_source_facts
 
 
 class RawSourceAdapterTests(unittest.TestCase):
@@ -25,6 +25,7 @@ class RawSourceAdapterTests(unittest.TestCase):
                             "rxcui": ["123"],
                         },
                         "pharmacokinetics": ["The terminal half-life is 2 to 4 hours. Metabolism is primarily by CYP3A4."],
+                        "dosage_and_administration": ["The maximum recommended dosage is 20 mg per day."],
                     }
                 ]
             }
@@ -37,6 +38,7 @@ class RawSourceAdapterTests(unittest.TestCase):
             pk = next(f for f in facts if f.fact_type == "pharmacokinetics")
             self.assertEqual(pk.claim["half_life_hours"], 3.0)
             self.assertTrue(any(f.fact_type == "enzyme_relation" and f.claim["tag"] == "CYP3A4_substrate" for f in facts))
+            self.assertTrue(any(f.fact_type == "dose_candidate" and f.claim["candidate_kind"] == "max_daily_candidate" for f in facts))
 
     def test_dailymed_xml_extracts_identity_pk_and_cyp(self):
         xml = b'''
@@ -56,6 +58,33 @@ class RawSourceAdapterTests(unittest.TestCase):
         pk = next(f for f in facts if f.fact_type == "pharmacokinetics")
         self.assertEqual(pk.claim["half_life_hours"], 0.5)
         self.assertTrue(any(f.fact_type == "enzyme_relation" and f.claim["tag"] == "CYP2D6_inhibitor" for f in facts))
+
+
+    def test_dailymed_bulk_reads_nested_zip_xml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "dailymed_spl"
+            source.mkdir()
+            xml = b'''
+            <document xmlns="urn:hl7-org:v3">
+              <setId root="nested"/>
+              <title>Nested DailyMed Drug</title>
+              <component><structuredBody><component><section>
+                <title>DOSAGE AND ADMINISTRATION</title>
+                <text>The maximum recommended dosage is 50 mg per day.</text>
+              </section></component></structuredBody></component>
+            </document>
+            '''
+            inner_bytes = root / "inner.zip"
+            with zipfile.ZipFile(inner_bytes, "w") as inner:
+                inner.writestr("label.xml", xml)
+            with zipfile.ZipFile(source / "outer.zip", "w") as outer:
+                outer.write(inner_bytes, "nested/inner.zip")
+
+            facts = load_dailymed_bulk_facts(source)
+
+            self.assertTrue(any(f.fact_type == "substance_identity" for f in facts))
+            self.assertTrue(any(f.fact_type == "dose_candidate" for f in facts))
 
 
 

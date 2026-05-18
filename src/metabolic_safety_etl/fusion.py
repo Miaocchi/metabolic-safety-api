@@ -4,6 +4,7 @@ from collections import defaultdict
 import json
 from typing import Any
 
+from .dose_rules import extract_dose_rule_facts, normalize_dose_rule_claim
 from .schemas import (
     CONFIDENCE_RANK,
     RISK_ACTION,
@@ -169,20 +170,12 @@ def build_dose_rules_core(facts: list[EvidenceFact], dataset_version: str) -> li
         if fact.fact_type != "dose_rule" or not fact.subject_ids:
             continue
         subject_id = fact.subject_ids[0]
-        claim = fact.claim
-        rule_id = str(claim.get("rule_id") or f"dose_{stable_hash(subject_id + str(claim))}")
-        thresholds = claim.get("thresholds") or []
-        if not isinstance(thresholds, list) or not thresholds:
+        normalized = normalize_dose_rule_claim(subject_id, fact.claim)
+        if not normalized:
             continue
+        rule_id = normalized["rule_id"]
         rules[rule_id] = {
-            "rule_id": rule_id,
-            "subject_id": subject_id,
-            "match_terms": claim.get("match_terms") or [],
-            "unit": claim.get("unit") or "mg",
-            "route": claim.get("route"),
-            "window_hours": _numeric(claim.get("window_hours")) or 24.0,
-            "thresholds": thresholds,
-            "note": claim.get("note"),
+            **normalized,
             "source_name": fact.source_name,
             "source_tier": fact.source_tier,
             "source_url": fact.source_url,
@@ -198,12 +191,14 @@ def build_dose_rules_core(facts: list[EvidenceFact], dataset_version: str) -> li
     return out
 
 def build_dataset(facts: list[EvidenceFact], dataset_version: str) -> dict[str, Any]:
+    normalized_facts = list(facts)
+    normalized_facts.extend(extract_dose_rule_facts(normalized_facts))
     return {
         "dataset_version": dataset_version,
-        "substances_core": build_substances_core(facts, dataset_version),
-        "interactions_core": merge_interactions(facts, dataset_version),
-        "dose_rules_core": build_dose_rules_core(facts, dataset_version),
-        "evidence_facts": [fact.to_dict() for fact in facts],
+        "substances_core": build_substances_core(normalized_facts, dataset_version),
+        "interactions_core": merge_interactions(normalized_facts, dataset_version),
+        "dose_rules_core": build_dose_rules_core(normalized_facts, dataset_version),
+        "evidence_facts": [fact.to_dict() for fact in normalized_facts],
     }
 
 

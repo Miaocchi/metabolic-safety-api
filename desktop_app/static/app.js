@@ -11,6 +11,7 @@ const state = {
   remoteSubstanceCache: [],
   remoteInteractionCache: new Map(),
   remoteDoseRuleCache: new Map(),
+  adverseSignalCache: new Map(),
   remoteImportToken: 0,
   remoteLastImportQuery: "",
   dataRequestToken: 0,
@@ -21,6 +22,7 @@ const state = {
   curvePanMinutes: 0,
   curveDrag: null,
   curveHoverRatio: null,
+  curveHiddenSubstances: new Set(),
   advancedMode: false,
   themeMode: "system",
 };
@@ -35,7 +37,9 @@ const themeModeStorageKey = "metabolic_safety_theme_mode_v1";
 const remoteApiBaseStorageKey = "metabolic_safety_remote_api_base_v1";
 const remoteFallbackStorageKey = "metabolic_safety_remote_fallback_v1";
 const remoteSubstanceCacheStorageKey = "metabolic_safety_remote_substances_v1";
-const defaultRemoteApiBaseUrl = "https://miaocchi.github.io/metabolic-safety-api/api";
+const remoteApiBaseMigratedStorageKey = "metabolic_safety_remote_api_base_migrated_v1";
+const hostedRemoteApiBaseUrl = "https://miaocchi.github.io/metabolic-safety-api/api";
+const defaultRemoteApiBaseUrl = "/remote-api";
 const ethanolDensityGPerMl = 0.789;
 const $ = (id) => document.getElementById(id);
 
@@ -112,6 +116,7 @@ const interactionTypeLabels = {
   dose_safety: "\u5242\u91cf\u5b89\u5168",
   pharmacokinetics: "\u836f\u4ee3\u52a8\u529b\u5b66",
   source_text: "\u6807\u7b7e\u539f\u6587",
+  adverse_event_signal: "\u4e0d\u826f\u4e8b\u4ef6\u5019\u9009\u4fe1\u53f7",
 };
 
 const categoryLabels = {
@@ -226,8 +231,18 @@ function setThemeMode(mode) {
 }
 
 function normalizeRemoteBaseUrl(value) {
-  const trimmed = String(value || "").trim().replace(/\/+$/, "");
-  return trimmed;
+  let trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  trimmed = trimmed.replace(/[?#].*$/, "").replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (trimmed.startsWith("/remote-api")) return defaultRemoteApiBaseUrl;
+  trimmed = trimmed.replace(/\/manifest\.json$/i, "");
+  trimmed = trimmed.replace(/\/search\/index\.json$/i, "");
+  trimmed = trimmed.replace(/\/search$/i, "");
+  const apiMarker = "/metabolic-safety-api/api";
+  const markerIndex = trimmed.indexOf(apiMarker);
+  if (markerIndex >= 0) return `${trimmed.slice(0, markerIndex)}${apiMarker}`;
+  return trimmed || defaultRemoteApiBaseUrl;
 }
 
 function remoteEnabled() {
@@ -236,13 +251,17 @@ function remoteEnabled() {
 
 function remoteApiUrl(path) {
   const base = normalizeRemoteBaseUrl(state.remoteConfig?.baseUrl || "");
-  if (!base) throw new Error("\u8bf7\u5148\u586b\u5199 GitHub Pages API \u5730\u5740\u3002");
+  if (!base) throw new Error("请先填写本机镜像或远程静态 API 地址。");
   return `${base}/${String(path || "").replace(/^\/+/, "")}`;
 }
 
 async function fetchRemoteJson(path, options = {}) {
-  const response = await fetch(remoteApiUrl(path), { cache: options.cache || "force-cache" });
-  if (!response.ok) throw new Error(`\u8fdc\u7a0b\u6e90\u8bf7\u6c42\u5931\u8d25\uff1aHTTP ${response.status}`);
+  const url = remoteApiUrl(path);
+  const response = await fetch(url, { cache: options.cache || "force-cache" });
+  if (!response.ok) {
+    if (response.status === 404 && options.optional) return options.fallback ?? null;
+    throw new Error(`远程源请求失败：HTTP ${response.status} · ${url}`);
+  }
   return response.json();
 }
 
@@ -254,9 +273,22 @@ function setRemoteApiStatus(message, kind = "") {
 }
 
 function loadRemoteConfig() {
+  const storedBase = localStorage.getItem(remoteApiBaseStorageKey) || "";
+  const normalizedStoredBase = normalizeRemoteBaseUrl(storedBase);
+  const wasHostedOrNested = normalizedStoredBase === hostedRemoteApiBaseUrl
+    || String(storedBase || "").includes("/metabolic-safety-api/api/");
+  const shouldMigrateOldDefault = wasHostedOrNested
+    && localStorage.getItem(remoteApiBaseMigratedStorageKey) !== "2";
+  const baseUrl = !storedBase || shouldMigrateOldDefault
+    ? defaultRemoteApiBaseUrl
+    : normalizedStoredBase;
+  if (shouldMigrateOldDefault) {
+    localStorage.setItem(remoteApiBaseMigratedStorageKey, "2");
+    localStorage.setItem(remoteApiBaseStorageKey, defaultRemoteApiBaseUrl);
+  }
   state.remoteConfig = {
     enabled: localStorage.getItem(remoteFallbackStorageKey) === "1",
-    baseUrl: normalizeRemoteBaseUrl(localStorage.getItem(remoteApiBaseStorageKey) || defaultRemoteApiBaseUrl),
+    baseUrl,
   };
   try {
     const cached = JSON.parse(localStorage.getItem(remoteSubstanceCacheStorageKey) || "[]");
@@ -275,7 +307,7 @@ function syncRemoteControls() {
   if (enabled) enabled.checked = Boolean(state.remoteConfig.enabled);
   const base = state.remoteConfig.baseUrl;
   if (!base) {
-    setRemoteApiStatus("\u8fdc\u7a0b\u56de\u9000\u9ed8\u8ba4\u5173\u95ed\uff1b\u586b\u5199 GitHub Pages /api \u5730\u5740\u540e\u53ef\u542f\u7528\u3002", "");
+    setRemoteApiStatus("\u8fdc\u7a0b\u56de\u9000\u9ed8\u8ba4\u5173\u95ed\uff1b\u586b\u5199 本机镜像 /remote-api 或 GitHub Pages /api \u5730\u5740\u540e\u53ef\u542f\u7528\u3002", "");
   } else if (state.remoteConfig.enabled) {
     setRemoteApiStatus(`\u8fdc\u7a0b\u56de\u9000\u5df2\u542f\u7528\uff1a${base}`, "ok");
   } else {
@@ -397,7 +429,7 @@ async function fetchRemoteDoseRulesForId(id) {
   if (state.remoteDoseRuleCache.has(id)) return state.remoteDoseRuleCache.get(id);
   try {
     const paths = await remotePathsForId(id);
-    const rows = await fetchRemoteJson(paths.dose_rules);
+    const rows = await fetchRemoteJson(paths.dose_rules, { optional: true, fallback: [] });
     const list = Array.isArray(rows) ? rows : [];
     state.remoteDoseRuleCache.set(id, list);
     return list;
@@ -429,7 +461,7 @@ async function fetchRemoteInteractionsForId(id) {
   if (state.remoteInteractionCache.has(id)) return state.remoteInteractionCache.get(id);
   try {
     const paths = await remotePathsForId(id);
-    const rows = await fetchRemoteJson(paths.interactions);
+    const rows = await fetchRemoteJson(paths.interactions, { optional: true, fallback: [] });
     const list = Array.isArray(rows) ? rows : [];
     state.remoteInteractionCache.set(id, list);
     return list;
@@ -451,10 +483,29 @@ async function fetchRemoteInteractionsForIds(ids) {
   return [...byId.values()];
 }
 
+async function fetchAdverseSignalsForIds(ids) {
+  const cleanIds = [...new Set((ids || []).filter(Boolean))].sort();
+  if (!cleanIds.length) return [];
+  const key = cleanIds.join(",");
+  const cached = state.adverseSignalCache.get(key);
+  if (cached && Date.now() - cached.ts < 6 * 60 * 60 * 1000) return cached.items;
+  try {
+    const response = await fetch(`/api/adverse-signals?ids=${encodeURIComponent(key)}&limit=3`, { cache: "no-cache" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    state.adverseSignalCache.set(key, { ts: Date.now(), items });
+    return items;
+  } catch {
+    state.adverseSignalCache.set(key, { ts: Date.now(), items: [] });
+    return [];
+  }
+}
+
 async function testRemoteApiConnection() {
   saveRemoteConfigFromControls();
   if (!state.remoteConfig.baseUrl) {
-    setRemoteApiStatus("\u8bf7\u5148\u586b\u5199 GitHub Pages /api \u5730\u5740\u3002", "error");
+    setRemoteApiStatus("\u8bf7\u5148\u586b\u5199 本机镜像 /remote-api 或 GitHub Pages /api \u5730\u5740\u3002", "error");
     return;
   }
   try {
@@ -847,7 +898,7 @@ function selectedSourceTerm() {
 function isEthanolSubstance(value) {
   const item = typeof value === "string" ? state.substanceById.get(value) || { id: value } : value;
   const haystack = `${item?.id || ""} ${item?.name_en || ""} ${item?.name_zh || ""} ${item?.identifiers?.aliases || ""}`.toLowerCase();
-  return haystack.includes("ethanol") || haystack.includes("乙醇") || haystack.includes("酒精");
+  return haystack.includes("ethanol") || haystack.includes("alcohol") || haystack.includes("乙醇") || haystack.includes("酒精");
 }
 
 function calculateEthanolDose() {
@@ -903,8 +954,33 @@ function resetIntakeTime() {
   if (input) input.value = toDateTimeLocal(Date.now());
 }
 
-function formatAxisTime(timestamp) {
-  return new Date(timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+function sameLocalDate(a, b) {
+  const left = new Date(a);
+  const right = new Date(b);
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function formatAxisTime(timestamp, viewportStart = timestamp, viewportEnd = timestamp) {
+  const date = new Date(timestamp);
+  const time = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const showDate = !sameLocalDate(viewportStart, viewportEnd);
+  return {
+    time,
+    date: showDate ? date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "",
+  };
+}
+
+function formatTooltipTime(timestamp) {
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 function minutesSince(timestamp) {
@@ -1083,16 +1159,38 @@ function evaluateDoseRisks() {
     const singleLabel = `${formatNumber(maxSingle, rule.unit === "g" ? 1 : 0)} ${unitLabel}`;
     const windowText = `${windowHours} \u5c0f\u65f6\u7d2f\u8ba1 ${totalLabel}`;
     const noteParts = [
-      `${threshold.label}；当前${windowText}，最大单次 ${singleLabel}。`,
+      `${threshold.label}；当前 ${windowText}，最大单次 ${singleLabel}。`,
     ];
     if ((rule.subject_id || rule.key) === "ethanol") {
       const standardDrinks = total / 14;
-      const estimatedNow = rows.reduce((sum, row) => {
-        const params = adjustedPkParams(row.entry, row.substance);
+      const exposure = rows.reduce((acc, row) => {
+        const ethanolEntry = {
+          ...row.entry,
+          dosage: row.amount,
+          unit: "g",
+          route: row.entry.route || "Oral",
+          ethanol: { ...(row.entry.ethanol || {}), grams: row.amount },
+        };
+        const ethanolSubstance = {
+          ...(row.substance || {}),
+          id: "ethanol",
+          name_zh: "乙醇",
+          name_en: "Ethanol",
+          category: "Depressant",
+          base_onset: row.substance?.base_onset || 30,
+          base_half_life: row.substance?.base_half_life || 4,
+        };
+        const params = adjustedPkParams(ethanolEntry, ethanolSubstance);
         const tHours = minutesBetween(row.entry.timestamp, now) / 60;
-        return tHours >= 0 ? sum + concentrationAt(tHours, row.entry.dosage, params) : sum;
-      }, 0);
-      noteParts.push(`约 ${formatNumber(standardDrinks, 1)} 个标准杯；模型估算当前乙醇暴露约 ${formatNumber(estimatedNow, 2)} g/L。`);
+        const current = tHours >= 0 ? concentrationAt(tHours, row.amount, params) : 0;
+        const peak = exposureMetricsForEntry(ethanolEntry, params, Math.max(6, windowHours)).cmax;
+        acc.current += current;
+        acc.peak += peak;
+        return acc;
+      }, { current: 0, peak: 0 });
+      const currentText = exposure.current < 0.01 ? "<0.01" : formatNumber(exposure.current, 2);
+      const peakText = exposure.peak < 0.01 ? "<0.01" : formatNumber(exposure.peak, 2);
+      noteParts.push(`约 ${formatNumber(standardDrinks, 1)} 个标准杯；当前估算残留 ${currentText} g/L，峰值估算 ${peakText} g/L；本条风险按 ${windowHours} 小时摄入总量触发。`);
     }
     noteParts.push("这是本地剂量规则提示，不替代医生、药师或急救判断。")
     risks.push({
@@ -1184,6 +1282,10 @@ function renderMeta() {
       : `\u672c\u5730\u5b89\u5168\u5e93\u5df2\u52a0\u8f7d \u00b7 ${substanceCount} \u4e2a\u7269\u8d28 \u00b7 \u6570\u636e\u4e0d\u79bb\u7aef`;
   }
   const profile = getProfileFromInputs();
+  const profileQuickSummary = $("profileQuickSummary");
+  if (profileQuickSummary) {
+    profileQuickSummary.textContent = `${profile.weightKg}kg / ${profile.heightCm}cm / ${profile.ageYears}\u5c81 / \u4f53\u8102 ${profile.bodyFatPct}% / \u7761\u7720 ${profile.sleepDebtHours}h / ${coreTempLabel(profile.coreTempC)}`;
+  }
   const modelMeta = $("modelMeta");
   if (modelMeta) {
     modelMeta.textContent = state.advancedMode
@@ -1244,19 +1346,22 @@ function renderJournal() {
 async function refreshRisks() {
   const token = ++state.riskRequestToken;
   const entries = activeEntries();
+  const ids = [...new Set(entries.map((entry) => entry.substanceId))];
   const doseRisks = evaluateDoseRisks();
   const modelRisks = evaluateModelRisks(entries);
+  const signalItems = await fetchAdverseSignalsForIds(ids);
   if (entries.length < 2) {
-    state.activeRisks = [...doseRisks, ...modelRisks].sort((a, b) => riskSortValue(b.risk_level) - riskSortValue(a.risk_level));
+    if (token !== state.riskRequestToken) return;
+    state.activeRisks = [...doseRisks, ...modelRisks, ...signalItems]
+      .sort((a, b) => riskSortValue(b.risk_level) - riskSortValue(a.risk_level));
     renderRisks();
     return;
   }
-  const ids = [...new Set(entries.map((entry) => entry.substanceId))];
   const response = await fetch(`/api/check?ids=${encodeURIComponent(ids.join(","))}`);
   const payload = await response.json();
   const remoteItems = await fetchRemoteInteractionsForIds(ids);
   if (token !== state.riskRequestToken) return;
-  state.activeRisks = [...doseRisks, ...modelRisks, ...(payload.items || []), ...remoteItems]
+  state.activeRisks = [...doseRisks, ...modelRisks, ...(payload.items || []), ...remoteItems, ...signalItems]
     .sort((a, b) => riskSortValue(b.risk_level) - riskSortValue(a.risk_level));
   renderRisks();
 }
@@ -1792,8 +1897,16 @@ function updateCurveZoomControls(viewport = null) {
   if (slider) slider.value = String(state.curveZoom);
   if (label) {
     const horizon = viewport?.horizonMinutes;
-    const horizonText = horizon ? formatDurationMinutes(horizon) : "\u65f6\u95f4\u7a97";
-    label.textContent = `${state.curveZoom.toFixed(2)}x \u00b7 ${horizonText} \u00b7 \u5e73\u79fb ${formatSignedDurationMinutes(state.curvePanMinutes)}`;
+    let windowText = "时间窗";
+    if (horizon && viewport?.startTimestamp) {
+      const endTimestamp = viewport.startTimestamp + horizon * 60000;
+      const startLabel = formatAxisTime(viewport.startTimestamp, viewport.startTimestamp, endTimestamp);
+      const endLabel = formatAxisTime(endTimestamp, viewport.startTimestamp, endTimestamp);
+      const startText = `${startLabel.date ? `${startLabel.date} ` : ""}${startLabel.time}`;
+      const endText = `${endLabel.date ? `${endLabel.date} ` : ""}${endLabel.time}`;
+      windowText = `${startText}-${endText} / ${formatDurationMinutes(horizon)}`;
+    }
+    label.textContent = `${state.curveZoom.toFixed(2)}x · ${windowText} · 平移 ${formatSignedDurationMinutes(state.curvePanMinutes)}`;
   }
 }
 
@@ -1805,7 +1918,7 @@ function drawCurve() {
   const left = 56 * dpr;
   const right = 12 * dpr;
   const top = 34 * dpr;
-  const bottom = 44 * dpr;
+  const bottom = 54 * dpr;
   const plotWidth = Math.max(1, width - left - right);
   const plotHeight = Math.max(1, height - top - bottom);
 
@@ -1819,10 +1932,21 @@ function drawCurve() {
   const { startTimestamp, pastMinutes, horizonMinutes } = viewport;
   updateCurveZoomControls(viewport);
   const samples = 260;
+  const unitLabel = (entry) => {
+    const unit = String(entry?.unit || "mg").toLowerCase();
+    if (unit === "mcg") return "ug";
+    return unit || "mg";
+  };
+  const formatConcentration = (value, unit) => {
+    const digits = value < 1 ? 3 : value < 10 ? 2 : 1;
+    return `${formatNumber(value, digits)} ${unit === "mixed" ? "混合单位/L" : `${unit}/L`}`;
+  };
   const allSeries = entries.map((entry, index) => {
     const substance = state.substanceById.get(entry.substanceId) || {};
     const params = adjustedPkParams(entry, substance);
     const dose = Number(entry.dosage || 1);
+    const nowHours = minutesBetween(entry.timestamp, now) / 60;
+    const currentValue = nowHours >= 0 ? concentrationAt(nowHours, dose, params) : 0;
     const values = [];
     for (let i = 0; i <= samples; i += 1) {
       const axisMinutes = horizonMinutes * (i / samples);
@@ -1831,14 +1955,71 @@ function drawCurve() {
       const value = tHours < 0 ? 0 : concentrationAt(tHours, dose, params);
       values.push(value);
     }
-    return { entry, params, values, color: colors[index % colors.length] };
+    return {
+      id: entry.substanceId,
+      entry,
+      params,
+      values,
+      currentValue,
+      unit: unitLabel(entry),
+      color: colors[index % colors.length],
+    };
   });
-  const totalValues = Array.from({ length: samples + 1 }, (_, i) => allSeries.reduce((sum, series) => sum + (series.values[i] || 0), 0));
-  const rawMax = Math.max(1, ...totalValues, ...allSeries.flatMap((series) => series.values));
+
+  const activeIds = [...new Set(allSeries.map((series) => series.id))];
+  [...state.curveHiddenSubstances].forEach((id) => {
+    if (!activeIds.includes(id)) state.curveHiddenSubstances.delete(id);
+  });
+  if (activeIds.length && activeIds.every((id) => state.curveHiddenSubstances.has(id))) {
+    state.curveHiddenSubstances.clear();
+  }
+
+  const groupedMap = new Map();
+  allSeries.forEach((series) => {
+    let group = groupedMap.get(series.id);
+    if (!group) {
+      group = {
+        id: series.id,
+        name: substanceName(series.id),
+        color: series.color,
+        values: Array(samples + 1).fill(0),
+        unitSet: new Set(),
+        currentValue: 0,
+        count: 0,
+        halfLives: [],
+      };
+      groupedMap.set(series.id, group);
+    }
+    group.count += 1;
+    group.currentValue += series.currentValue || 0;
+    group.unitSet.add(series.unit);
+    group.halfLives.push(series.params.adjustedHalfLifeHours);
+    series.values.forEach((value, index) => {
+      group.values[index] += value || 0;
+    });
+  });
+  const groupedSeries = [...groupedMap.values()].map((group) => ({
+    ...group,
+    unit: group.unitSet.size === 1 ? [...group.unitSet][0] : "mixed",
+    halfLife: group.halfLives.reduce((sum, value) => sum + value, 0) / Math.max(group.halfLives.length, 1),
+  }));
+  const visibleGroups = groupedSeries.filter((group) => !state.curveHiddenSubstances.has(group.id));
+  const totalCurrentValue = visibleGroups.reduce((sum, group) => sum + (group.currentValue || 0), 0);
+  const totalValues = Array.from({ length: samples + 1 }, (_, i) => visibleGroups.reduce((sum, group) => sum + (group.values[i] || 0), 0));
+  const rawMax = Math.max(1, ...totalValues, ...visibleGroups.flatMap((group) => group.values));
   const magnitude = 10 ** Math.floor(Math.log10(rawMax));
   const normalized = rawMax / magnitude;
   const step = normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
   const maxValue = step * magnitude;
+  const visibleUnits = new Set(visibleGroups.map((group) => group.unit));
+  const singleVisibleUnit = visibleUnits.size === 1 ? [...visibleUnits][0] : null;
+  const yAxisLabel = singleVisibleUnit && singleVisibleUnit !== "mixed" ? `浓度 (${singleVisibleUnit}/L)` : "浓度/相对负荷";
+  const chartTopLegendText = $("chartTopLegendText");
+  if (chartTopLegendText) {
+    chartTopLegendText.textContent = singleVisibleUnit && singleVisibleUnit !== "mixed"
+      ? `总浓度 + 单药浓度 (${singleVisibleUnit}/L)`
+      : "总负荷 + 各药物浓度";
+  }
 
   ctx.lineWidth = 1 * dpr;
   ctx.strokeStyle = "#e8eef5";
@@ -1869,25 +2050,35 @@ function drawCurve() {
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   const xTicks = 10;
+  const viewportEndTimestamp = startTimestamp + horizonMinutes * 60000;
   for (let i = 0; i <= xTicks; i += 1) {
     const ratio = i / xTicks;
     const x = left + plotWidth * ratio;
-    const hour = (horizonMinutes * ratio) / 60;
-    ctx.fillText(formatNumber(hour, hour < 10 ? 1 : 0), x, top + plotHeight + 10 * dpr);
+    const tickTimestamp = startTimestamp + horizonMinutes * ratio * 60000;
+    const label = formatAxisTime(tickTimestamp, startTimestamp, viewportEndTimestamp);
+    ctx.fillText(label.time, x, top + plotHeight + 8 * dpr);
+    if (label.date) {
+      ctx.fillText(label.date, x, top + plotHeight + 23 * dpr);
+    }
   }
   ctx.fillStyle = "#50627a";
-  ctx.fillText("\u65f6\u95f4 (\u5c0f\u65f6)", left + plotWidth / 2, height - 18 * dpr);
+  ctx.fillText("真实时间", left + plotWidth / 2, height - 18 * dpr);
   ctx.save();
   ctx.translate(14 * dpr, top + plotHeight / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.textBaseline = "middle";
-  ctx.fillText("\u6d53\u5ea6 (mg/L)", 0, 0);
+  ctx.fillText(yAxisLabel, 0, 0);
   ctx.restore();
 
   const xForIndex = (i) => left + plotWidth * (i / samples);
   const yForValue = (value) => top + plotHeight * (1 - Math.max(0, Math.min(value / maxValue, 1)));
+  const hasCurveHover = state.curveHoverRatio != null;
+  const currentRatio = horizonMinutes > 0 ? Math.max(0, Math.min(1, pastMinutes / horizonMinutes)) : 0;
+  const hoverIndex = hasCurveHover
+    ? Math.max(0, Math.min(samples, Math.round(state.curveHoverRatio * samples)))
+    : Math.max(0, Math.min(samples, Math.round(currentRatio * samples)));
 
-  if (totalValues.some((value) => value > 0)) {
+  if (visibleGroups.length && totalValues.some((value) => value > 0)) {
     ctx.beginPath();
     totalValues.forEach((value, i) => {
       const x = xForIndex(i);
@@ -1898,11 +2089,11 @@ function drawCurve() {
     ctx.lineTo(left + plotWidth, top + plotHeight);
     ctx.lineTo(left, top + plotHeight);
     ctx.closePath();
-    ctx.fillStyle = "rgba(38, 173, 231, 0.22)";
+    ctx.fillStyle = "rgba(38, 173, 231, 0.18)";
     ctx.fill();
 
     ctx.strokeStyle = "#16a5e8";
-    ctx.lineWidth = 3 * dpr;
+    ctx.lineWidth = 2.5 * dpr;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.beginPath();
@@ -1914,53 +2105,68 @@ function drawCurve() {
     });
     ctx.stroke();
 
-    if (allSeries.length > 1) {
-      allSeries.forEach((series) => {
-        ctx.strokeStyle = series.color;
-        ctx.globalAlpha = 0.36;
-        ctx.lineWidth = 1.5 * dpr;
-        ctx.beginPath();
-        series.values.forEach((value, i) => {
-          const x = xForIndex(i);
-          const y = yForValue(value);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
+    visibleGroups.forEach((group) => {
+      ctx.strokeStyle = group.color;
+      ctx.globalAlpha = visibleGroups.length === 1 ? 0.95 : 0.72;
+      ctx.lineWidth = (visibleGroups.length === 1 ? 2.5 : 1.8) * dpr;
+      ctx.beginPath();
+      group.values.forEach((value, i) => {
+        const x = xForIndex(i);
+        const y = yForValue(value);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       });
-      ctx.globalAlpha = 1;
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+
+    if (hasCurveHover) {
+      const markerX = xForIndex(hoverIndex);
+      const markerY = yForValue(totalValues[hoverIndex]);
+      const axisTimestamp = startTimestamp + horizonMinutes * (hoverIndex / samples) * 60000;
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#16a5e8";
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.arc(markerX, markerY, 6 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+  
+      const drugRows = visibleGroups
+        .map((group) => ({ ...group, current: group.values[hoverIndex] || 0 }))
+        .sort((a, b) => b.current - a.current)
+        .slice(0, 6);
+      const tooltipLines = [
+        { text: `时间: ${formatTooltipTime(axisTimestamp)}`, color: "#ffffff" },
+        { text: singleVisibleUnit && singleVisibleUnit !== "mixed" ? `总浓度: ${formatConcentration(totalValues[hoverIndex] || 0, singleVisibleUnit)}` : `总负荷: ${formatNumber(totalValues[hoverIndex] || 0, 3)}`, color: "#16a5e8" },
+        ...drugRows.map((group) => ({ text: `${group.name}: ${formatConcentration(group.current, group.unit)}`, color: group.color })),
+      ];
+      if (visibleGroups.length > drugRows.length) {
+        tooltipLines.push({ text: `其余 ${visibleGroups.length - drugRows.length} 个药物已省略`, color: "#ffffff" });
+      }
+      const tooltipW = Math.min(360 * dpr, width - left - 12 * dpr);
+      const tooltipH = (18 + tooltipLines.length * 19) * dpr;
+      const tooltipX = Math.min(Math.max(markerX + 10 * dpr, left), width - tooltipW - 8 * dpr);
+      const tooltipY = Math.min(Math.max(top + 6 * dpr, markerY - tooltipH - 10 * dpr), top + plotHeight - tooltipH - 4 * dpr);
+      ctx.fillStyle = "#202a3a";
+      roundRect(ctx, tooltipX, tooltipY, tooltipW, tooltipH, 6 * dpr);
+      ctx.fill();
+      ctx.font = `${12 * dpr}px Segoe UI, Microsoft YaHei, sans-serif`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      tooltipLines.forEach((line, index) => {
+        const y = tooltipY + (10 + index * 19) * dpr;
+        if (index >= 1) {
+          ctx.fillStyle = line.color;
+          ctx.fillRect(tooltipX + 12 * dpr, y + 2 * dpr, 10 * dpr, 10 * dpr);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillText(line.text, tooltipX + 28 * dpr, y, tooltipW - 36 * dpr);
+        } else {
+          ctx.fillStyle = "#ffffff";
+          ctx.fillText(line.text, tooltipX + 12 * dpr, y);
+        }
+      });
     }
-
-    const hoverIndex = state.curveHoverRatio == null
-      ? totalValues.reduce((best, value, i) => value > totalValues[best] ? i : best, 0)
-      : Math.max(0, Math.min(samples, Math.round(state.curveHoverRatio * samples)));
-    const markerX = xForIndex(hoverIndex);
-    const markerY = yForValue(totalValues[hoverIndex]);
-    const axisHours = (horizonMinutes * (hoverIndex / samples)) / 60;
-    ctx.fillStyle = "#ffffff";
-    ctx.strokeStyle = "#16a5e8";
-    ctx.lineWidth = 2 * dpr;
-    ctx.beginPath();
-    ctx.arc(markerX, markerY, 6 * dpr, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    const tooltipW = 176 * dpr;
-    const tooltipH = 58 * dpr;
-    const tooltipX = Math.min(Math.max(markerX + 10 * dpr, left), width - tooltipW - 8 * dpr);
-    const tooltipY = Math.max(top + 6 * dpr, markerY - tooltipH - 10 * dpr);
-    ctx.fillStyle = "#202a3a";
-    roundRect(ctx, tooltipX, tooltipY, tooltipW, tooltipH, 6 * dpr);
-    ctx.fill();
-    ctx.fillStyle = "#ffffff";
-    ctx.font = `${13 * dpr}px Segoe UI, Microsoft YaHei, sans-serif`;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-    ctx.fillText(`\u65f6\u95f4: ${formatNumber(axisHours, 1)} h`, tooltipX + 12 * dpr, tooltipY + 10 * dpr);
-    ctx.fillStyle = "#16a5e8";
-    ctx.fillRect(tooltipX + 12 * dpr, tooltipY + 33 * dpr, 12 * dpr, 12 * dpr);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(`\u8840\u836f\u6d53\u5ea6 (mg/L): ${formatNumber(totalValues[hoverIndex], 3)}`, tooltipX + 30 * dpr, tooltipY + 30 * dpr);
   }
 
   const nowX = left + plotWidth * Math.min(Math.max(pastMinutes / horizonMinutes, 0), 1);
@@ -1977,17 +2183,31 @@ function drawCurve() {
   const legend = $("legend");
   if (!legend) return;
   legend.innerHTML = "";
-  if (!allSeries.length) {
+  if (!groupedSeries.length) {
     const empty = document.createElement("div");
     empty.className = "legend-item";
-    empty.textContent = "\u6682\u65e0\u6d3b\u8dc3\u66f2\u7ebf\uff1b\u65b0\u589e\u65e5\u5fd7\u540e\u4f1a\u6309\u4f53\u91cd\u3001\u4f53\u8102\u3001\u5e74\u9f84\u3001\u7761\u7720\u3001\u4f53\u6e29\u3001\u9014\u5f84\u548c\u80c3\u90e8\u72b6\u6001\u4f30\u7b97\u3002";
+    empty.textContent = "暂无活跃曲线；新增日志后会按体重、体脂、年龄、睡眠、体温、途径和胃部状态估算。";
     legend.appendChild(empty);
     return;
   }
-  allSeries.forEach((series) => {
-    const item = document.createElement("div");
-    item.className = "legend-item";
-    item.innerHTML = `<span class="swatch" style="background:${series.color}"></span>${escapeHtml(substanceName(series.entry.substanceId))} \u00b7 ${series.params.adjustedHalfLifeHours.toFixed(1)}h`;
+  const allButton = document.createElement("button");
+  allButton.type = "button";
+  allButton.className = `legend-item curve-filter all ${state.curveHiddenSubstances.size ? "" : "active"}`;
+  allButton.dataset.curveFilter = "all";
+  allButton.setAttribute("aria-pressed", state.curveHiddenSubstances.size ? "false" : "true");
+  allButton.title = "显示全部药物曲线";
+  allButton.innerHTML = `<span class="swatch total-swatch"></span>全部 · 总曲线 · 当前 ${singleVisibleUnit && singleVisibleUnit !== "mixed" ? formatConcentration(totalCurrentValue, singleVisibleUnit) : `总负荷 ${formatNumber(totalCurrentValue, 3)}`}`;
+  legend.appendChild(allButton);
+  groupedSeries.forEach((group) => {
+    const hidden = state.curveHiddenSubstances.has(group.id);
+    const current = group.currentValue || 0;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `legend-item curve-filter ${hidden ? "muted" : "active"}`;
+    item.dataset.curveSubstance = group.id;
+    item.setAttribute("aria-pressed", hidden ? "false" : "true");
+    item.title = "点击单独查看该药物；Ctrl/Command 点击可多选显示或隐藏";
+    item.innerHTML = `<span class="swatch" style="background:${group.color}"></span>${escapeHtml(group.name)}${group.count > 1 ? ` ×${group.count}` : ""} · 当前 ${formatConcentration(current, group.unit)} · t1/2 ${group.halfLife.toFixed(1)}h`;
     legend.appendChild(item);
   });
 }
@@ -2082,11 +2302,12 @@ function substanceCard(substance) {
 }
 
 function riskSubjectText(risk) {
-  if (risk.risk_kind === "dose" || risk.risk_kind === "model") return risk.substance_name || substanceName(risk.substance_id);
+  if (["dose", "model", "signal"].includes(risk.risk_kind)) return risk.substance_name || substanceName(risk.substance_id);
   return `${risk.substance_a_name || substanceName(risk.substance_a_id)} \u00d7 ${risk.substance_b_name || substanceName(risk.substance_b_id)}`;
 }
 
 function consumerRiskAction(risk) {
+  if (risk.risk_kind === "signal") return "\u8fd9\u662f\u516c\u5f00\u836f\u7269\u8b66\u6212\u5e93\u91cc\u7684\u5019\u9009\u4fe1\u53f7\uff0c\u53ea\u7528\u4e8e\u63d0\u9192\u4f60\u89c2\u5bdf\u5e76\u8bb0\u5f55\u75c7\u72b6\uff1b\u4e0d\u4ee3\u8868\u8be5\u836f\u4e00\u5b9a\u5bfc\u81f4\u8be5\u53cd\u5e94\uff0c\u4e5f\u4e0d\u4ee3\u8868\u8054\u7528\u51b2\u7a81\u3002";
   const score = riskSortValue(risk.risk_level);
   if (score >= 5) return "\u6682\u505c\u53e0\u52a0\u4f7f\u7528\uff0c\u4f18\u5148\u8054\u7cfb\u533b\u751f/\u836f\u5e08\uff1b\u51fa\u73b0\u660f\u7761\u3001\u547c\u5438\u5f02\u5e38\u3001\u80f8\u75db\u6216\u610f\u8bc6\u6539\u53d8\u65f6\u76f4\u63a5\u6025\u6551\u3002";
   if (score >= 4) return "\u4e0d\u8981\u7ee7\u7eed\u8ffd\u52a0\u5242\u91cf\uff0c\u5148\u62c9\u5f00\u65f6\u95f4\u5e76\u89c2\u5bdf\u72b6\u6001\uff1b\u5982\u6709\u4e0d\u9002\u5c31\u54a8\u8be2\u4e13\u4e1a\u4eba\u5458\u3002";
@@ -2098,12 +2319,18 @@ function consumerRiskCard(risk) {
   const card = document.createElement("article");
   card.className = "risk-card consumer-risk-card";
   const subject = riskSubjectText(risk);
-  const note = risk.risk_kind === "model" ? (risk.note || "PopPK \u6a21\u578b\u8b66\u544a") : localizeInteractionNote(risk.note || "");
+  const note = risk.risk_kind === "model"
+    ? (risk.note || "PopPK \u6a21\u578b\u8b66\u544a")
+    : risk.risk_kind === "signal"
+      ? (risk.note || "\u836f\u7269\u8b66\u6212\u5019\u9009\u4fe1\u53f7")
+      : localizeInteractionNote(risk.note || "");
   const type = risk.risk_kind === "dose"
     ? "\u5242\u91cf/\u8fc7\u91cf"
     : risk.risk_kind === "model"
       ? "\u4ee3\u8c22\u6a21\u578b"
-      : "\u8054\u7528\u51b2\u7a81";
+      : risk.risk_kind === "signal"
+        ? "\u4e0d\u826f\u4e8b\u4ef6\u5019\u9009\u4fe1\u53f7"
+        : "\u8054\u7528\u51b2\u7a81";
   card.innerHTML = `
     <header>
       <div class="card-title">${escapeHtml(subject)}</div>
@@ -2129,6 +2356,7 @@ function riskCard(risk) {
   if (!state.advancedMode) return consumerRiskCard(risk);
   if (risk.risk_kind === "dose") return doseRiskCard(risk);
   if (risk.risk_kind === "model") return modelRiskCard(risk);
+  if (risk.risk_kind === "signal") return signalRiskCard(risk);
   return interactionCard(risk);
 }
 
@@ -2167,6 +2395,28 @@ function doseRiskCard(risk) {
   `;
   return card;
 }
+function signalRiskCard(risk) {
+  const card = document.createElement("article");
+  card.className = "risk-card";
+  const sourceTier = sourceTierLabel(risk.source_tier || "Signal");
+  const confidence = confidenceLabel(risk.confidence || "Low");
+  const type = interactionTypeLabel(risk.interaction_type || "adverse_event_signal");
+  const reactions = Array.isArray(risk.reactions) && risk.reactions.length
+    ? risk.reactions.map((item) => `${item.label || item.reaction} ${Number(item.count || 0).toLocaleString()} \u4f8b`).join("\uff1b")
+    : "\u6682\u65e0\u53ef\u5c55\u793a\u660e\u7ec6";
+  card.innerHTML = `
+    <header>
+      <div class="card-title">${escapeHtml(risk.substance_name || substanceName(risk.substance_id))} \u00b7 \u836f\u7269\u8b66\u6212\u5019\u9009\u4fe1\u53f7</div>
+      <span class="badge ${escapeHtml(risk.risk_level)}">${escapeHtml(riskLevelLabel(risk.risk_level))}</span>
+    </header>
+    <div class="card-meta">\u6765\u6e90\u5c42\u7ea7\uff1a${escapeHtml(sourceTier)} \u00b7 \u53ef\u4fe1\u5ea6\uff1a${escapeHtml(confidence)} \u00b7 \u7c7b\u578b\uff1a${escapeHtml(type)}</div>
+    <div class="card-note">\u5171\u62a5\u544a\u4e8b\u4ef6\uff1a${escapeHtml(reactions)}</div>
+    <div class="card-note">${escapeHtml(risk.note || "FAERS \u4fe1\u53f7\u4e0d\u4ee3\u8868\u56e0\u679c\u5173\u7cfb\uff0c\u4ec5\u7528\u4e8e\u89c2\u5bdf\u63d0\u9192\u3002")}</div>
+    <div class="card-note">\u6765\u6e90\uff1a${escapeHtml(risk.source_name || "openFDA FAERS adverse event")}</div>
+  `;
+  return card;
+}
+
 function interactionCard(interaction) {
   const card = document.createElement("article");
   card.className = "risk-card";
@@ -2236,20 +2486,20 @@ function sourceCard(source) {
   const card = document.createElement("article");
   card.className = `source-card ${source.can_update || source.can_bulk_update ? "" : "disabled"}`;
   const last = sourceUpdateSummary(source);
-  const directLabel = source.is_direct_public ? "\u516c\u5f00 API" : source.status === "license_required" ? "\u9700\u6388\u6743" : source.status?.includes("pending") ? "\u5f85\u63a5\u5165" : "\u672c\u5730\u5df2\u7eb3\u5165";
-  const updateLabel = source.key === "psychonautwiki" ? "\u6279\u91cf\u540c\u6b65\u5019\u9009" : "\u6309\u5f53\u524d\u7269\u8d28\u8865\u5145";
-  const onlineLabel = source.status === "license_required" ? "\u9700\u6388\u6743\u540e\u518d\u5165\u7ebf\u4e0a\u5e93" : "\u7ebf\u4e0a\u5e93\u7edf\u4e00\u878d\u5408";
-  const rebuildLine = source.last_update?.mode === "included_in_full_rebuild" ? "\u5df2\u7eb3\u5165\u6700\u8fd1\u4e00\u6b21\u5168\u91cf\u91cd\u5efa\u3002" : "";
-  const factLine = source.is_direct_public ? `\u5019\u9009\u4e8b\u5b9e\uff1a${source.optional_facts_count || 0} \u6761` : "";
+  const directLabel = source.is_direct_public ? "公开 API" : source.status === "license_required" ? "需授权" : source.status?.includes("pending") ? "待接入" : "本地已纳入";
+  const updateLabel = source.key === "psychonautwiki" ? "批量同步候选" : "按当前物质补充";
+  const onlineLabel = source.status === "license_required" ? "商业授权后接入线上库" : "线上库统一融合";
+  const rebuildLine = source.last_update?.mode === "included_in_full_rebuild" ? "已纳入最近一次全量重建。" : "";
+  const factLine = source.is_direct_public ? `候选事实：${source.optional_facts_count || 0} 条` : "";
   const scopeLine = source.is_direct_public && source.key !== "psychonautwiki"
-    ? "\u201c\u6309\u5f53\u524d\u7269\u8d28\u8865\u5145\u201d\u662f\u672c\u5730\u4e34\u65f6\u8865\u76f2\uff1b\u7ebf\u4e0a\u5168\u91cf\u5e93\u7531 GitHub Actions \u7edf\u4e00\u878d\u5408\u6784\u5efa\uff0c\u672c\u5730\u4e0d\u81ea\u52a8\u4e0b\u8f7d\u5927\u5305\u3002"
+    ? "按当前物质补充只做本地临时补盲；线上全量库由 GitHub Actions 统一融合构建，本地应用不会自动下载大包。"
     : "";
   card.innerHTML = `
     <header>
       <div class="card-title">${escapeHtml(source.name)}</div>
       <span class="badge Unknown">${escapeHtml(source.tier)}</span>
     </header>
-    <div class="card-meta">${escapeHtml(source.status)} \u00b7 ${escapeHtml(directLabel)} \u00b7 ${escapeHtml(last)}</div>
+    <div class="card-meta">${escapeHtml(source.status)} · ${escapeHtml(directLabel)} · ${escapeHtml(last)}</div>
     <div class="card-note">${escapeHtml(source.note || "")}</div>
     ${factLine ? `<div class="card-note">${escapeHtml(factLine)}</div>` : ""}
     ${rebuildLine ? `<div class="card-note">${escapeHtml(rebuildLine)}</div>` : ""}
@@ -2258,12 +2508,11 @@ function sourceCard(source) {
     <div class="source-actions">
       ${source.is_direct_public ? `<button class="ghost" type="button" data-update-source="${escapeHtml(source.key)}">${escapeHtml(updateLabel)}</button>` : ""}
       ${source.can_bulk_update ? `<button class="ghost" type="button" disabled>${escapeHtml(onlineLabel)}</button>` : ""}
-      ${source.status === "license_required" ? `<button class="ghost" type="button" disabled>\u5546\u4e1a\u6388\u6743\u540e\u63a5\u5165</button>` : ""}
+      ${source.status === "license_required" ? `<button class="ghost" type="button" disabled>商业授权后接入</button>` : ""}
     </div>
   `;
   return card;
 }
-
 async function updateSource(key) {
   const source = state.sources.find((item) => item.key === key);
   const term = selectedSourceTerm();
@@ -2282,27 +2531,8 @@ async function updateSource(key) {
 
 async function bulkSyncSource(key) {
   const source = state.sources.find((item) => item.key === key);
-  const isAll = key === "all";
-  const isLarge = isAll || source?.bulk_update_large;
-  if (isLarge) {
-    const ok = window.confirm(isAll
-      ? "\u5c06\u5168\u91cf\u62c9\u53d6\u6240\u6709\u53ef\u7528\u975e\u5546\u4e1a\u6e90\uff0c\u5305\u62ec openFDA/DailyMed/ChEMBL/FooDrugs \u7b49\u5927\u6587\u4ef6\uff0c\u53ef\u80fd\u5360\u7528\u6570\u5341 GB \u5e76\u8fd0\u884c\u5f88\u4e45\u3002\u7ee7\u7eed\u5417\uff1f"
-      : "\u8be5\u6e90\u662f\u5927\u6587\u4ef6\u5168\u91cf\u4e0b\u8f7d\uff0c\u53ef\u80fd\u9700\u8981\u5f88\u4e45\u5e76\u5360\u7528\u8f83\u5927\u78c1\u76d8\u7a7a\u95f4\u3002\u7ee7\u7eed\u5417\uff1f");
-    if (!ok) return;
-  }
-  setTaskButtonsDisabled(true);
-  setRebuildProgress(0, isAll ? "\u542f\u52a8\u5168\u91cf\u62c9\u53d6\u6240\u6709\u4ed3\u5e93..." : `\u542f\u52a8\u5168\u91cf\u62c9\u53d6\uff1a${source?.name || key}...`);
-  const response = await fetch(`/api/bulk-sync?key=${encodeURIComponent(key)}`);
-  const payload = await response.json();
-  if (!payload.ok || !payload.jobId) {
-    setTaskButtonsDisabled(false);
-    setRebuildProgress(100, payload.message || "\u5168\u91cf\u62c9\u53d6\u542f\u52a8\u5931\u8d25\u3002", true);
-    setSourceMessage(payload.message || "\u5168\u91cf\u62c9\u53d6\u542f\u52a8\u5931\u8d25\u3002", true);
-    return;
-  }
-  await pollRebuildJob(payload.jobId);
+  setSourceMessage(`本地桌面应用不直接下载 ${source?.name || key} 的全量大包；全量原始库只用于离线结构化分析，请用 ETL 命令 mirror-raw-sources 拉到 D 盘镜像目录。`, true);
 }
-
 function setTaskButtonsDisabled(disabled) {
   ["rebuildDataset", "syncPublicSources", "bulkSyncAll", "labelBulkManifest"].forEach((id) => {
     const element = $(id);
@@ -2335,11 +2565,11 @@ async function rebuildDatasetFromSettings() {
 
 
 async function showLabelBulkManifest() {
-  setSourceMessage("\u6b63\u5728\u8bfb\u53d6 openFDA / DailyMed \u5b98\u65b9\u5168\u91cf\u6807\u7b7e\u5305\u6e05\u5355...", false);
+  setSourceMessage("正在读取 openFDA / DailyMed 官方全量标签包清单...", false);
   const response = await fetch("/api/label-bulk-manifest");
   const payload = await response.json();
   if (!payload.ok) {
-    setSourceMessage(payload.message || "\u8bfb\u53d6\u5168\u91cf\u6807\u7b7e\u5305\u6e05\u5355\u5931\u8d25\u3002", true);
+    setSourceMessage(payload.message || "读取全量标签包清单失败。", true);
     return;
   }
   const sourceNames = {
@@ -2351,15 +2581,14 @@ async function showLabelBulkManifest() {
     const parts = item.parts || [];
     const sizeMb = item.total_size_mb || parts.reduce((sum, part) => sum + Number(part.size_mb || 0), 0);
     const records = item.total_records || parts.reduce((sum, part) => sum + Number(part.records || 0), 0);
-    return `${sourceNames[item.source] || item.source}\uff1a${parts.length} \u4e2a zip \u5206\u5305\uff0c${Number(records || 0).toLocaleString("zh-CN")} \u6761\u6807\u7b7e/\u6587\u4ef6\uff0c\u7ea6 ${(sizeMb / 1024).toFixed(1)} GB`;
+    return `${sourceNames[item.source] || item.source}：${parts.length} 个 zip 分包，${Number(records || 0).toLocaleString("zh-CN")} 条标签/文件，约 ${(sizeMb / 1024).toFixed(1)} GB`;
   });
-  setSourceMessage(`\u8fd9\u662f\u5b98\u65b9\u5168\u91cf\u4e0b\u8f7d\u5305\u6e05\u5355\uff0c\u8fd8\u6ca1\u6709\u4e0b\u8f7d\u5230\u672c\u673a\uff1a${lines.join("\uff1b")}\u3002\u5b8c\u6574\u62c9\u53d6\u4f1a\u5199\u5165 data/raw\uff0c\u4f53\u91cf\u5f88\u5927\uff0c\u7528\u4e8e\u79bb\u7ebf ETL \u548c\u5242\u91cf\u89c4\u5219\u62bd\u53d6\uff0c\u4e0d\u662f\u6d4f\u89c8\u5668 API \u76f4\u63a5\u540c\u6b65\u3002`, false);
+  setSourceMessage(`这是官方全量下载包清单，当前页面不会下载大包：${lines.join("；")}。D 盘原始库镜像只用于离线 ETL 和结构化分析，不作为本地应用运行时数据库。`, false);
 }
-
 async function showRemoteFullLibrary() {
   saveRemoteConfigFromControls();
   if (!state.remoteConfig.baseUrl) {
-    setSourceMessage("\u8bf7\u5148\u5728\u8fdc\u7a0b\u9759\u6001 API \u5730\u5740\u4e2d\u586b\u5199 GitHub Pages /api\u3002", true);
+    setSourceMessage("\u8bf7\u5148\u5728\u8fdc\u7a0b\u9759\u6001 API \u5730\u5740\u4e2d\u586b\u5199 本机镜像 /remote-api 或 GitHub Pages /api\u3002", true);
     return;
   }
   setSourceMessage("\u6b63\u5728\u8bfb\u53d6\u7ebf\u4e0a\u5168\u91cf\u878d\u5408\u5e93 manifest...", false);
@@ -2630,6 +2859,35 @@ $("bulkSyncAll")?.addEventListener("click", () => {
     setTaskButtonsDisabled(false);
     setSourceMessage(error.message, true);
   });
+});
+$("legend")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-curve-filter], [data-curve-substance]");
+  if (!button) return;
+  const activeIds = [...new Set(activeEntries().map((entry) => entry.substanceId).filter(Boolean))];
+  if (button.dataset.curveFilter === "all") {
+    state.curveHiddenSubstances.clear();
+    requestCurveDraw();
+    return;
+  }
+  const id = button.dataset.curveSubstance;
+  if (!id || !activeIds.includes(id)) return;
+  if (event.ctrlKey || event.metaKey || event.shiftKey) {
+    if (state.curveHiddenSubstances.has(id)) state.curveHiddenSubstances.delete(id);
+    else state.curveHiddenSubstances.add(id);
+    if (activeIds.every((activeId) => state.curveHiddenSubstances.has(activeId))) {
+      state.curveHiddenSubstances.clear();
+    }
+  } else {
+    const alreadyIsolated = activeIds.length > 1
+      && !state.curveHiddenSubstances.has(id)
+      && activeIds.every((activeId) => activeId === id || state.curveHiddenSubstances.has(activeId));
+    if (alreadyIsolated || activeIds.length <= 1) {
+      state.curveHiddenSubstances.clear();
+    } else {
+      state.curveHiddenSubstances = new Set(activeIds.filter((activeId) => activeId !== id));
+    }
+  }
+  requestCurveDraw();
 });
 $("curvePanLeft")?.addEventListener("click", () => panCurveByFraction(-0.25));
 $("curveZoomOut")?.addEventListener("click", () => zoomCurve(1 / 1.25));

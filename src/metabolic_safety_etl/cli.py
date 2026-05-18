@@ -14,7 +14,7 @@ from .adapters.rxnav import fetch_rxnav_facts
 from .export import write_json, write_mobile_seed_files, write_sqlite
 from .fusion import build_dataset, load_facts
 from .io import read_json
-from .raw_sources import load_raw_source_facts, load_remote_raw_source_facts
+from .raw_sources import fetch_remote_bulk_manifests, load_raw_source_facts, load_remote_raw_source_facts, mirror_remote_raw_sources
 from .public_enrichment import (
     candidate_terms_from_dataset,
     dedupe_facts,
@@ -125,6 +125,67 @@ def cmd_sources(args: argparse.Namespace) -> int:
     else:
         for source in payload:
             print(f"{source['key']}\t{source['status']}\t{source['name']}\t{source['note']}")
+    return 0
+
+
+
+
+def cmd_remote_manifests(args: argparse.Namespace) -> int:
+    source_keys = [item.strip() for item in args.sources.split(",") if item.strip()]
+    manifests = fetch_remote_bulk_manifests(source_keys)
+    payload = {
+        "sources": {
+            key: {
+                "fingerprint": manifest.get("fingerprint"),
+                "source_url": manifest.get("source_url"),
+                "parts": len(manifest.get("parts") or []),
+                "total_records": manifest.get("total_records"),
+                "total_size_mb": manifest.get("total_size_mb"),
+                "manifest": manifest,
+            }
+            for key, manifest in manifests.items()
+        }
+    }
+    if args.out:
+        write_json(Path(args.out), payload)
+        print(f"out={Path(args.out).resolve()}")
+    for key, row in payload["sources"].items():
+        print(f"source={key} fingerprint={row['fingerprint']} parts={row['parts']} records={row.get('total_records')}")
+    if args.fingerprint_out:
+        combined = ",".join(f"{key}:{row['fingerprint']}" for key, row in sorted(payload["sources"].items()))
+        Path(args.fingerprint_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.fingerprint_out).write_text(combined, encoding="utf-8")
+        print(f"fingerprint_out={Path(args.fingerprint_out).resolve()}")
+    return 0
+
+
+def cmd_build_remote_source_facts(args: argparse.Namespace) -> int:
+    source_keys = [item.strip() for item in args.sources.split(",") if item.strip()]
+    facts, summary = load_remote_raw_source_facts(
+        source_keys,
+        temp_dir=Path(args.temp_dir) if args.temp_dir else None,
+        max_records_per_source=args.raw_max_records or 0,
+        max_parts_per_source=args.raw_stream_max_parts,
+    )
+    out = Path(args.out)
+    write_json(out, [fact.to_dict() for fact in facts])
+    if args.summary_out:
+        write_json(Path(args.summary_out), summary)
+    print(f"remote_source_facts={len(facts)}")
+    print(f"remote_source_summary={summary}")
+    print(f"out={out.resolve()}")
+    return 0
+
+def cmd_mirror_raw_sources(args: argparse.Namespace) -> int:
+    source_keys = [item.strip() for item in args.sources.split(",") if item.strip()]
+    summary = mirror_remote_raw_sources(
+        source_keys,
+        raw_dir=Path(args.raw_dir),
+        proxy=args.proxy,
+        max_parts_per_source=args.max_parts,
+        overwrite=args.overwrite,
+    )
+    print(f"mirror_summary={summary}")
     return 0
 
 
@@ -325,6 +386,45 @@ def build_parser() -> argparse.ArgumentParser:
     sources = sub.add_parser("sources", help="List source integration status")
     sources.add_argument("--out", default=None)
     sources.set_defaults(func=cmd_sources)
+
+
+    remote_manifests = sub.add_parser("remote-manifests", help="Fetch upstream bulk manifests and print stable fingerprints for CI caches")
+    remote_manifests.add_argument("--sources", default="openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb")
+    remote_manifests.add_argument("--out", default="")
+    remote_manifests.add_argument("--fingerprint-out", default="")
+    remote_manifests.set_defaults(func=cmd_remote_manifests)
+
+    remote_facts = sub.add_parser("build-remote-source-facts", help="Stream selected remote bulk sources into EvidenceFact JSON for cacheable CI layers")
+    remote_facts.add_argument("--sources", default="openfda_label")
+    remote_facts.add_argument("--out", required=True)
+    remote_facts.add_argument("--summary-out", default="")
+    remote_facts.add_argument("--temp-dir", default="")
+    remote_facts.add_argument("--raw-max-records", type=int, default=0)
+    remote_facts.add_argument("--raw-stream-max-parts", type=int, default=0)
+    remote_facts.set_defaults(func=cmd_build_remote_source_facts)
+
+    mirror_raw = sub.add_parser(
+        "mirror-raw-sources",
+        help="Download upstream bulk source files into a raw mirror for offline structure analysis",
+    )
+    mirror_raw.add_argument(
+        "--raw-dir",
+        default="D:/metabolic-safety-data/raw",
+        help="Persistent raw mirror directory used only for offline analysis",
+    )
+    mirror_raw.add_argument(
+        "--sources",
+        default="openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb",
+        help="Comma-separated remote bulk sources",
+    )
+    mirror_raw.add_argument(
+        "--proxy",
+        default="",
+        help="HTTP/HTTPS proxy, for example http://127.0.0.1:2081",
+    )
+    mirror_raw.add_argument("--max-parts", type=int, default=0, help="Max parts per source; 0 means all")
+    mirror_raw.add_argument("--overwrite", action="store_true", help="Re-download files even if present")
+    mirror_raw.set_defaults(func=cmd_mirror_raw_sources)
 
     inspect = sub.add_parser("inspect", help="Inspect risk distribution without writing seed files")
     inspect.add_argument("--input", required=True)

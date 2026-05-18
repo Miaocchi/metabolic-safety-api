@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -16,11 +17,14 @@ import zipfile
 from typing import Any, Iterable, Iterator
 
 from .adapters.label_bulk import fetch_dailymed_label_manifest, fetch_openfda_label_manifest
+from .dose_rules import extract_dose_candidate_facts
 from .io import read_json
 from .schemas import EvidenceFact, now_utc, slugify, stable_hash
 
 OPENFDA_SECTIONS = ("pharmacokinetics", "clinical_pharmacology", "drug_interactions", "overdosage", "warnings", "boxed_warning")
+OPENFDA_DOSE_SECTIONS = ("dosage_and_administration", "dosage_forms_and_strengths", "overdosage")
 DAILYMED_SECTION_HINTS = ("PHARMACOKINETICS", "CLINICAL PHARMACOLOGY", "DRUG INTERACTIONS", "OVERDOSAGE", "WARNINGS", "BOXED WARNING")
+DAILYMED_DOSE_SECTION_HINTS = ("DOSAGE AND ADMINISTRATION", "DOSAGE FORMS AND STRENGTHS", "OVERDOSAGE")
 CYP_RE = re.compile(r"\bCYP(?:1A2|2A6|2B6|2C8|2C9|2C19|2D6|2E1|3A4|3A5|3A7|4A11)\b", re.I)
 HALF_LIFE_RE = re.compile(
     r"(?:half[-\s]?life|t\s*1\s*/\s*2|t1/2|terminal\s+half[-\s]?life)"
@@ -162,6 +166,10 @@ def openfda_result_facts(result: dict[str, Any]) -> list[EvidenceFact]:
         )
     ]
     facts.extend(pk_and_enzyme_facts(subject_id, joined_sections(result, OPENFDA_SECTIONS), "openFDA drug label bulk", url, "bulk_json"))
+    for section in OPENFDA_DOSE_SECTIONS:
+        section_text = joined_sections(result, (section,))
+        if section_text:
+            facts.extend(extract_dose_candidate_facts(subject_id, section_text, "openFDA drug label bulk", url, "bulk_json", section=section))
     return facts
 
 
@@ -171,19 +179,31 @@ def load_dailymed_bulk_facts(source_dir: Path, max_records: int = 100_000, max_f
     for path in select_files(iter_files(source_dir), max_files):
         if path.suffix == ".part" or not zipfile.is_zipfile(path):
             continue
-        with zipfile.ZipFile(path) as archive:
-            for member in archive.namelist():
-                if not member.lower().endswith(".xml"):
-                    continue
+        for xml_bytes in iter_dailymed_xml(path):
+            try:
+                facts.extend(dailymed_xml_facts(xml_bytes))
+            except Exception:
+                continue
+            seen += 1
+            if max_records and seen >= max_records:
+                return dedupe_fact_objects(facts)
+    return dedupe_fact_objects(facts)
+
+
+def iter_dailymed_xml(outer_path: Path) -> Iterator[bytes]:
+    with zipfile.ZipFile(outer_path) as outer:
+        for member in outer.namelist():
+            lower = member.lower()
+            if lower.endswith(".xml"):
+                yield outer.read(member)
+            elif lower.endswith(".zip"):
                 try:
-                    with archive.open(member) as handle:
-                        facts.extend(dailymed_xml_facts(handle.read()))
+                    with zipfile.ZipFile(io.BytesIO(outer.read(member))) as inner:
+                        for inner_name in inner.namelist():
+                            if inner_name.lower().endswith(".xml"):
+                                yield inner.read(inner_name)
                 except Exception:
                     continue
-                seen += 1
-                if max_records and seen >= max_records:
-                    return dedupe_fact_objects(facts)
-    return dedupe_fact_objects(facts)
 
 
 def dailymed_xml_facts(xml_bytes: bytes) -> list[EvidenceFact]:
@@ -209,8 +229,12 @@ def dailymed_xml_facts(xml_bytes: bytes) -> list[EvidenceFact]:
             updated_at=now_utc(),
         )
     ]
-    text = "\n".join(text for section_title, text in spl_sections(root) if matches_any(section_title, DAILYMED_SECTION_HINTS))
+    sections = list(spl_sections(root))
+    text = "\n".join(text for section_title, text in sections if matches_any(section_title, DAILYMED_SECTION_HINTS))
     facts.extend(pk_and_enzyme_facts(subject_id, text, "DailyMed SPL bulk", url, "bulk_spl_xml"))
+    dose_text = "\n".join(text for section_title, text in sections if matches_any(section_title, DAILYMED_DOSE_SECTION_HINTS))
+    if dose_text:
+        facts.extend(extract_dose_candidate_facts(subject_id, dose_text, "DailyMed SPL bulk", url, "bulk_spl_xml", section="dosage"))
     return facts
 
 
@@ -659,21 +683,116 @@ def dedupe_fact_objects(facts: Iterable[EvidenceFact]) -> list[EvidenceFact]:
         by_id[fact.fact_id] = fact
     return [by_id[key] for key in sorted(by_id)]
 REMOTE_RAW_SOURCE_KEYS = ("openfda_label", "dailymed", "chembl", "foodrugs", "onsides", "pharmgkb")
+REMOTE_RAW_SOURCE_DIRS = {
+    "openfda_label": "openfda_label",
+    "dailymed": "dailymed_spl",
+    "chembl": "chembl",
+    "foodrugs": "foodrugs",
+    "onsides": "onsides",
+    "pharmgkb": "pharmgkb",
+}
 PHARMGKB_BULK_FILES = (
     "clinicalAnnotations.zip",
     "clinicalVariants.zip",
     "variantAnnotations.zip",
-    "automatedAnnotations.zip",
     "drugLabels.zip",
-    "guidelineAnnotations.zip",
+    "guidelineAnnotations.json.zip",
     "relationships.zip",
     "drugs.zip",
     "genes.zip",
     "variants.zip",
     "chemicals.zip",
-    "diseases.zip",
     "phenotypes.zip",
 )
+
+
+def normalize_proxy(proxy: str | None) -> str:
+    value = str(proxy or "").strip()
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "http://" + value
+    return value
+
+
+def configure_url_proxy(proxy: str | None) -> str:
+    value = normalize_proxy(proxy)
+    if not value:
+        return ""
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ[key] = value
+    return value
+
+
+def mirror_remote_raw_sources(
+    source_keys: Iterable[str],
+    raw_dir: Path,
+    proxy: str | None = None,
+    max_parts_per_source: int = 0,
+    overwrite: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Download upstream bulk files into a persistent raw mirror for offline analysis."""
+    proxy_value = configure_url_proxy(proxy)
+    requested = [key.strip() for key in source_keys if key and key.strip()]
+    if not requested:
+        requested = list(REMOTE_RAW_SOURCE_KEYS)
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    summary: dict[str, dict[str, Any]] = {}
+    if proxy_value:
+        print(f"mirror_raw_proxy={proxy_value}", flush=True)
+    print(f"mirror_raw_dir={raw_dir.resolve()}", flush=True)
+    for key in requested:
+        if key not in REMOTE_RAW_SOURCE_KEYS:
+            summary[key] = {"status": "unsupported", "downloaded_files": 0, "skipped_files": 0, "errors": 0}
+            continue
+        try:
+            summary[key] = mirror_remote_source(key, raw_dir, max_parts_per_source, overwrite)
+        except Exception as exc:
+            summary[key] = {"status": "error", "downloaded_files": 0, "skipped_files": 0, "errors": 1, "error": f"{type(exc).__name__}: {exc}"}
+            print(f"mirror_raw_error={key} error={type(exc).__name__}: {exc}", flush=True)
+    return summary
+
+
+def mirror_remote_source(key: str, raw_dir: Path, max_parts: int = 0, overwrite: bool = False) -> dict[str, Any]:
+    manifest = fetch_remote_bulk_manifest(key)
+    parts = manifest.get("parts") or []
+    if max_parts:
+        parts = parts[:max_parts]
+    out_dir = Path(raw_dir) / REMOTE_RAW_SOURCE_DIRS[key]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = 0
+    skipped = 0
+    errors = 0
+    for index, part in enumerate(parts, start=1):
+        url = part.get("url")
+        if not url:
+            errors += 1
+            continue
+        target = out_dir / safe_filename(part.get("name") or url)
+        label = f"mirror_raw_download={key} part={index}/{len(parts)} name={target.name}"
+        try:
+            status = download_url(url, target, skip_existing=not overwrite, progress_label=label)
+            if status == "skipped":
+                skipped += 1
+            else:
+                downloaded += 1
+        except Exception as exc:
+            errors += 1
+            print(f"mirror_raw_error={key} part={index} error={type(exc).__name__}: {exc}", flush=True)
+    info = {
+        "status": "loaded" if downloaded or skipped else "no_files",
+        "remote_parts": len(parts),
+        "downloaded_files": downloaded,
+        "skipped_files": skipped,
+        "errors": errors,
+        "out_dir": str(out_dir.resolve()),
+        "source_url": manifest.get("source_url"),
+        "total_records": manifest.get("total_records"),
+        "total_size_mb": manifest.get("total_size_mb"),
+    }
+    print(f"mirror_raw_summary={key} {info}", flush=True)
+    return info
 
 
 def load_remote_raw_source_facts(
@@ -781,10 +900,62 @@ def fetch_remote_bulk_manifest(key: str) -> dict[str, Any]:
     if key == "foodrugs":
         return fetch_zenodo_manifest("8192515", "foodrugs")
     if key == "onsides":
-        return fetch_github_release_manifest("tatonetti-lab", "onsides", "onsides")
+        return fetch_github_release_manifest("tatonetti-lab/onsides", "onsides", "onsides")
     if key == "pharmgkb":
         return fetch_pharmgkb_bulk_manifest()
     raise ValueError(f"unsupported remote raw source: {key}")
+
+
+
+
+def fetch_remote_bulk_manifests(source_keys: Iterable[str]) -> dict[str, dict[str, Any]]:
+    requested = [key.strip() for key in source_keys if key and key.strip()] or list(REMOTE_RAW_SOURCE_KEYS)
+    manifests: dict[str, dict[str, Any]] = {}
+    for key in requested:
+        manifest = fetch_remote_bulk_manifest(key)
+        manifest["fingerprint"] = manifest_fingerprint(manifest)
+        manifests[key] = manifest
+    return manifests
+
+
+def manifest_fingerprint(manifest: dict[str, Any]) -> str:
+    payload = {
+        "source": manifest.get("source"),
+        "source_url": manifest.get("source_url"),
+        "export_date": manifest.get("export_date"),
+        "total_records": manifest.get("total_records"),
+        "total_size_mb": manifest.get("total_size_mb"),
+        "parts": sorted(
+            [
+                {
+                    "name": part.get("name"),
+                    "url": part.get("url"),
+                    "records": part.get("records"),
+                    "size_mb": part.get("size_mb"),
+                    "checksum": part.get("checksum"),
+                    "etag": part.get("etag"),
+                    "last_modified": part.get("last_modified"),
+                    "updated_at": part.get("updated_at"),
+                }
+                for part in manifest.get("parts", []) or []
+            ],
+            key=lambda item: (str(item.get("name") or ""), str(item.get("url") or "")),
+        ),
+    }
+    return stable_hash(json.dumps(payload, ensure_ascii=False, sort_keys=True), 32)
+
+
+def fetch_url_head_metadata(url: str, timeout: int = 20) -> dict[str, Any]:
+    try:
+        with urlopen(Request(url, headers={"User-Agent": "metabolic-safety-etl"}, method="HEAD"), timeout=timeout) as response:
+            size = int(response.headers.get("Content-Length") or 0)
+            return {
+                "size_mb": round(size / 1024 / 1024, 2) if size else None,
+                "etag": response.headers.get("ETag"),
+                "last_modified": response.headers.get("Last-Modified"),
+            }
+    except Exception:
+        return {}
 
 
 def fetch_chembl_bulk_manifest() -> dict[str, Any]:
@@ -795,7 +966,7 @@ def fetch_chembl_bulk_manifest() -> dict[str, Any]:
     parts = []
     for name in names:
         if re.search(r"chembl_.*_sqlite\.tar\.gz$", name):
-            parts.append({"name": name, "url": urljoin(url, name), "records": None, "size_mb": None})
+            parts.append({"name": name, "url": urljoin(url, name), "records": None, **fetch_url_head_metadata(urljoin(url, name), timeout=12)})
     return {"source": "chembl", "source_url": url, "parts": parts, "total_records": None, "total_size_mb": None}
 
 
@@ -810,7 +981,7 @@ def fetch_zenodo_manifest(record_id: str, source: str) -> dict[str, Any]:
         if not file_url:
             continue
         size = item.get("size") or 0
-        parts.append({"name": item.get("key") or Path(urlparse(file_url).path).name, "url": file_url, "records": None, "size_mb": round(size / 1024 / 1024, 2) if size else None})
+        parts.append({"name": item.get("key") or Path(urlparse(file_url).path).name, "url": file_url, "records": None, "size_mb": round(size / 1024 / 1024, 2) if size else None, "checksum": item.get("checksum")})
     return {"source": source, "source_url": url, "parts": parts, "total_records": None, "total_size_mb": sum(part.get("size_mb") or 0 for part in parts)}
 
 
@@ -820,12 +991,12 @@ def fetch_github_release_manifest(owner_repo: str, repo_name: str, source: str) 
         with urlopen(Request(api_url, headers={"User-Agent": "metabolic-safety-etl"}), timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
         parts = [
-            {"name": asset.get("name"), "url": asset.get("browser_download_url"), "records": None, "size_mb": round((asset.get("size") or 0) / 1024 / 1024, 2)}
+            {"name": asset.get("name"), "url": asset.get("browser_download_url"), "records": None, "size_mb": round((asset.get("size") or 0) / 1024 / 1024, 2), "updated_at": asset.get("updated_at"), "id": asset.get("id")}
             for asset in payload.get("assets", []) or []
             if asset.get("browser_download_url")
         ]
         if parts:
-            return {"source": source, "source_url": api_url, "parts": parts, "total_records": None, "total_size_mb": sum(part.get("size_mb") or 0 for part in parts)}
+            return {"source": source, "source_url": api_url, "tag_name": payload.get("tag_name"), "published_at": payload.get("published_at"), "updated_at": payload.get("updated_at"), "parts": parts, "total_records": None, "total_size_mb": sum(part.get("size_mb") or 0 for part in parts)}
     except Exception:
         pass
     branch = "main"
@@ -843,20 +1014,39 @@ def fetch_pharmgkb_bulk_manifest() -> dict[str, Any]:
     base = "https://api.pharmgkb.org/v1/download/file/data/"
     parts = []
     for name in PHARMGKB_BULK_FILES:
-        parts.append({"name": name, "url": base + name, "records": None, "size_mb": None})
-    return {"source": "pharmgkb", "source_url": base, "parts": parts, "total_records": None, "total_size_mb": None}
+        url = base + name
+        meta = fetch_url_head_metadata(url, timeout=12)
+        parts.append({"name": name, "url": url, "records": None, **meta})
+    return {"source": "pharmgkb", "source_url": base, "parts": parts, "total_records": None, "total_size_mb": sum(part.get("size_mb") or 0 for part in parts) or None}
 
 
-def download_url(url: str, target: Path) -> None:
+def download_url(url: str, target: Path, skip_existing: bool = False, progress_label: str = "") -> str:
+    if skip_existing and target.exists() and target.stat().st_size > 0:
+        if progress_label:
+            print(f"{progress_label} status=skipped bytes={target.stat().st_size}", flush=True)
+        return "skipped"
+    target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".part")
     req = Request(url, headers={"User-Agent": "metabolic-safety-etl"})
-    with urlopen(req, timeout=90) as response, tmp.open("wb") as handle:
+    with urlopen(req, timeout=600) as response, tmp.open("wb") as handle:
+        total = int(response.headers.get("Content-Length") or 0)
+        downloaded = 0
+        next_report = 256 * 1024 * 1024
+        if progress_label:
+            print(f"{progress_label} status=start total_bytes={total}", flush=True)
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             handle.write(chunk)
+            downloaded += len(chunk)
+            if progress_label and downloaded >= next_report:
+                print(f"{progress_label} status=progress downloaded_bytes={downloaded} total_bytes={total}", flush=True)
+                next_report += 256 * 1024 * 1024
     tmp.replace(target)
+    if progress_label:
+        print(f"{progress_label} status=downloaded bytes={target.stat().st_size}", flush=True)
+    return "downloaded"
 
 
 def safe_filename(value: str) -> str:

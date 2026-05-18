@@ -154,20 +154,20 @@
           </label>
         </div>
         <label>
-          远程静态 API 地址（GitHub / Cloudflare Pages）
-          <input id="remoteApiBase" type="url" placeholder="https://miaocchi.github.io/metabolic-safety-api/api">
+          静态 API 地址（默认本机 /remote-api，可填 GitHub / Cloudflare Pages）
+          <input id="remoteApiBase" type="text" placeholder="/remote-api">
         </label>
         <div class="remote-source-actions">
           <button id="remoteApiSave" class="ghost" type="button">保存远程源</button>
           <button id="remoteApiTest" class="ghost" type="button">测试连接</button>
         </div>
-        <div id="remoteApiStatus" class="remote-api-status">远程回退默认关闭；开启后只在本地检索无命中时请求远程 JSON。</div>
+        <div id="remoteApiStatus" class="remote-api-status">远程回退默认关闭；默认使用本机 /remote-api，开启后只在本地检索无命中时请求 JSON。</div>
       </div>
       <div class="fixed-profile-title">固定个体代谢参数</div>
       <details class="profile-details settings-profile" open>
         <summary>
           <span>个体代谢参数</span>
-          <small>身高 / 体重 / 年龄 / 体脂 / 睡眠 / 体温</small>
+          <small id="profileQuickSummary">身高 / 体重 / 年龄 / 体脂 / 睡眠 / 体温</small>
         </summary>
         <div class="profile-fields">
           <div class="row">
@@ -235,7 +235,7 @@
         <button id="curveZoomReset" class="ghost" type="button">重置</button>
         <span id="curveZoomLabel">1.00&times; &middot; 12h</span>
       </div>
-      <div class="chart-top-legend"><span class="ring-swatch"></span>血药浓度 (mg/L)</div>
+      <div id="chartTopLegend" class="chart-top-legend"><span class="ring-swatch"></span><span id="chartTopLegendText">总浓度 + 单药浓度</span></div>
       <canvas id="curveCanvas" width="1100" height="360"></canvas>
       <div id="legend" class="legend"></div>
     </section>
@@ -277,6 +277,6 @@
     </div>
   </main>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260518-settings-full"></script>
 </body>
 </html>

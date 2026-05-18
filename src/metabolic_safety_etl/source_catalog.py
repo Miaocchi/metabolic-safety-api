@@ -17,6 +17,7 @@ class SourceStatus:
 SOURCES = [
     SourceStatus("ddinter", "DDInter 2.0", "CuratedDB", "connected_local_csv", "import-ddinter", "https://ddinter2.scbdd.com/download/", "当前主交互库，已导入本地 CSV。"),
     SourceStatus("openfda_label", "openFDA Drug Label", "Regulatory", "connected_api_and_local_bulk", "fetch-openfda / raw_sources", "https://open.fda.gov/apis/drug/label/", "API 检索源 + data/raw/openfda_label 本地全量包抽取，可融合身份、PK 半衰期与 CYP 候选。"),
+    SourceStatus("openfda_event", "openFDA FAERS adverse event", "Signal", "connected_api", "fetch-openfda-event", "https://open.fda.gov/apis/drug/event/", "FAERS 自发不良事件报告计数，只作为低可信度候选信号，不代表因果关系或确认联用冲突。"),
     SourceStatus("dailymed", "DailyMed SPL", "Regulatory", "connected_api_and_local_bulk", "fetch-dailymed / raw_sources", "https://dailymed.nlm.nih.gov/dailymed/app-support-web-services.cfm", "API 元数据 + data/raw/dailymed_spl 本地 SPL XML 抽取，可融合身份、PK 半衰期与 CYP 候选。"),
     SourceStatus("rxnav", "RxNav / RxNorm", "Regulatory", "connected_api", "fetch-rxnav", "https://lhncbc.nlm.nih.gov/RxNav/APIs/RxNormAPIs.html", "实体归一化和 RxCUI 映射；不再提供 DDI。"),
     SourceStatus("chembl", "ChEMBL", "CuratedDB", "connected_api_and_local_bulk", "fetch-chembl / raw_sources", "https://www.ebi.ac.uk/chembl/", "API 检索源 + 本地 SQLite/TAR 包抽取，可融合化学实体、物化性质与脂溶性候选。"),
