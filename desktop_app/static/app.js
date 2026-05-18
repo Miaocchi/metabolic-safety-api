@@ -627,8 +627,8 @@ function renderSideEffectWarning() {
   }).slice(0, state.advancedMode ? 4 : 2);
   const lines = [
     ...highRisks.map((risk) => {
-      if (risk.risk_kind === "dose" || risk.risk_kind === "model") return `${risk.substance_name || substanceName(risk.substance_id)}\uff1a${riskLevelLabel(risk.risk_level)} \u00b7 ${risk.note || "\u5242\u91cf/\u6a21\u578b\u8b66\u544a"}`;
-      return `${risk.substance_a_name || substanceName(risk.substance_a_id)} \u00d7 ${risk.substance_b_name || substanceName(risk.substance_b_id)}\uff1a${riskLevelLabel(risk.risk_level)} \u00b7 ${risk.note || "\u76f8\u4e92\u4f5c\u7528\u8b66\u544a"}`;
+      const note = risk.note || (risk.risk_kind === "signal" ? "\u836f\u7269\u8b66\u6212\u5019\u9009\u4fe1\u53f7" : "\u98ce\u9669\u63d0\u9192");
+      return `${riskSubjectText(risk)}\uff1a${riskLevelLabel(risk.risk_level)} \u00b7 ${note}`;
     }),
     ...modelWarnings,
   ];
@@ -1466,10 +1466,7 @@ function renderCombinedEffects() {
   const notableRisks = (state.activeRisks || [])
     .filter((risk) => riskSortValue(risk.risk_level) >= 3)
     .slice(0, 3)
-    .map((risk) => {
-      if (risk.risk_kind === "dose" || risk.risk_kind === "model") return `${risk.substance_name || substanceName(risk.substance_id)}\uff1a${riskLevelLabel(risk.risk_level)}`;
-      return `${risk.substance_a_name || substanceName(risk.substance_a_id)} \u00d7 ${risk.substance_b_name || substanceName(risk.substance_b_id)}\uff1a${riskLevelLabel(risk.risk_level)}`;
-    });
+    .map((risk) => `${riskSubjectText(risk)}\uff1a${riskLevelLabel(risk.risk_level)}`);
 
   target.className = "combined-effect";
   if (!state.advancedMode) {
