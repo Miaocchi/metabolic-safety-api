@@ -73,6 +73,41 @@ class DoseRuleNormalizationTests(unittest.TestCase):
 
         self.assertEqual([rule["rule_id"] for rule in dataset["dose_rules_core"]], ["curated_example"])
 
+    def test_overdose_warning_promotes_screening_rule_from_daily_candidate(self):
+        facts = load_facts([
+            {
+                "fact_type": "dose_candidate",
+                "subject_ids": ["Example Screen Tablet"],
+                "claim": {
+                    "value": 2,
+                    "value_max": 4,
+                    "unit": "mg",
+                    "context": "The recommended dosage is 2 to 4 mg daily and may be adjusted cautiously.",
+                },
+                "source_tier": "Regulatory",
+                "source_name": "Test Label",
+                "confidence": "Low",
+            },
+            {
+                "fact_type": "overdose_warning",
+                "subject_ids": ["Example Screen Tablet"],
+                "claim": {"overdose_text": "OVERDOSAGE may cause severe CNS depression and supportive care may be required."},
+                "risk_level": "Major",
+                "source_tier": "Regulatory",
+                "source_name": "Test Label",
+                "confidence": "Medium",
+            },
+        ])
+
+        dataset = build_dataset(facts, "test")
+
+        self.assertEqual(len(dataset["dose_rules_core"]), 1)
+        rule = dataset["dose_rules_core"][0]
+        self.assertEqual(rule["basis"], "overdose_warning_supported_dose_screening")
+        self.assertIn("overdose_warning", rule["normalized_from"])
+        self.assertTrue(rule["condition"]["screening_rule"])
+        self.assertIn({"kind": "window", "level": "Moderate", "limit": 12.0, "label": "24h total reaches/exceeds 3x extracted dose candidate 12 mg"}, rule["thresholds"])
+
 
 if __name__ == "__main__":
     unittest.main()

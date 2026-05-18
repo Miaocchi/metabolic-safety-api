@@ -5,7 +5,14 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import sys
 from typing import Any, Iterable
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from metabolic_safety_etl.dose_rules import extract_dose_rule_facts, normalize_dose_rule_claim  # noqa: E402
+from metabolic_safety_etl.schemas import EvidenceFact  # noqa: E402
 
 API_VERSION = "static-drug-api-v1"
 
@@ -39,6 +46,37 @@ def load_claim(raw: str | None) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def load_subject_ids(row: sqlite3.Row) -> list[str]:
+    raw = row["subject_ids_json"]
+    if raw:
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, list) and payload:
+                return [str(item) for item in payload if str(item)]
+        except Exception:
+            pass
+    return [str(row["subject_id"] or "unknown")]
+
+
+def row_to_fact(row: sqlite3.Row) -> EvidenceFact:
+    return EvidenceFact(
+        fact_id=str(row["fact_id"] or ""),
+        fact_type=str(row["fact_type"] or ""),
+        subject_ids=load_subject_ids(row),
+        claim=load_claim(row["claim_json"]),
+        risk_level=str(row["risk_level"] or "Unknown"),
+        confidence=str(row["confidence"] or "Unknown"),
+        source_tier=str(row["source_tier"] or "Community"),
+        source_name=str(row["source_name"] or row["source_key"] or "Unknown"),
+        source_url=str(row["source_url"] or ""),
+        evidence_quote=str(row["evidence_quote"] or ""),
+        extraction_method=str(row["extraction_method"] or "structured_sqlite"),
+        review_status=str(row["review_status"] or "unreviewed"),
+        use_policy=str(row["use_policy"] or "candidate_signal"),
+        updated_at=str(row["updated_at"] or ""),
+    )
 
 
 def identity_aliases(claim: dict[str, Any]) -> list[str]:
@@ -233,6 +271,159 @@ def update_search_and_details(api_dir: Path, dose_by_subject: dict[str, list[dic
     return len(rows)
 
 
+def load_rule_source_facts(db_paths: list[Path]) -> list[EvidenceFact]:
+    facts: list[EvidenceFact] = []
+    seen: set[str] = set()
+    for db_path in db_paths:
+        if not db_path.exists():
+            continue
+        for fact_type in ("dose_candidate", "overdose_warning"):
+            for row in iter_rows(db_path, fact_type):
+                fid = str(row["fact_id"] or "")
+                if fid in seen:
+                    continue
+                seen.add(fid)
+                facts.append(row_to_fact(row))
+    return facts
+
+
+def dose_rule_row(fact: EvidenceFact, dataset_version: str) -> dict[str, Any] | None:
+    if not fact.subject_ids:
+        return None
+    subject_id = fact.subject_ids[0]
+    normalized = normalize_dose_rule_claim(subject_id, fact.claim)
+    if not normalized:
+        return None
+    return {
+        **normalized,
+        "source_name": fact.source_name,
+        "source_tier": fact.source_tier,
+        "source_url": fact.source_url,
+        "confidence": fact.confidence,
+        "review_status": fact.review_status,
+        "dataset_version": dataset_version,
+        "remote_source": API_VERSION,
+        "evidence_refs": [{
+            "fact_id": fact.fact_id,
+            "source_tier": fact.source_tier,
+            "source_name": fact.source_name,
+            "source_url": fact.source_url,
+            "confidence": fact.confidence,
+            "risk_level": fact.risk_level,
+            "review_status": fact.review_status,
+        }],
+    }
+
+
+def load_existing_rule_buckets(api_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    root = api_dir / "dose-rules" / "by-substance"
+    if not root.exists():
+        return buckets
+    for path in root.glob("**/*.json"):
+        rows = read_json(path, [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            subject_id = str(row.get("subject_id") or "unknown")
+            buckets.setdefault(subject_id, []).append(row)
+    return buckets
+
+
+def merge_generated_dose_rules(api_dir: Path, db_paths: list[Path], dataset_version: str, names: dict[str, str]) -> dict[str, Any]:
+    source_facts = load_rule_source_facts(db_paths)
+    generated_facts = extract_dose_rule_facts(source_facts)
+    buckets = load_existing_rule_buckets(api_dir)
+    generated_rules = 0
+    written_subjects: set[str] = set()
+    for fact in generated_facts:
+        rule = dose_rule_row(fact, dataset_version)
+        if not rule:
+            continue
+        subjects = {str(rule.get("subject_id") or "")}
+        original_subject = rule.get("original_subject_id")
+        if original_subject:
+            subjects.add(str(original_subject))
+        for subject_id in subjects:
+            if not subject_id:
+                continue
+            subject_rule = dict(rule)
+            if subject_id != rule.get("subject_id"):
+                subject_rule["canonical_subject_id"] = rule.get("subject_id")
+                subject_rule["subject_id"] = subject_id
+            bucket = buckets.setdefault(subject_id, [])
+            by_rule = {str(item.get("rule_id")): item for item in bucket if item.get("rule_id")}
+            rule_id = str(subject_rule.get("rule_id") or "")
+            if rule_id and rule_id in by_rule:
+                continue
+            bucket.append(subject_rule)
+            written_subjects.add(subject_id)
+            generated_rules += 1
+    for subject_id, rows in sorted(buckets.items()):
+        if not rows:
+            continue
+        rows.sort(key=lambda item: (str(item.get("basis") or ""), str(item.get("rule_id") or "")))
+        write_json(api_dir / id_path("dose-rules/by-substance", subject_id), rows)
+    unique_rule_ids = {str(row.get("rule_id")) for rows in buckets.values() for row in rows if row.get("rule_id")}
+    logical_count = len(unique_rule_ids)
+    update_dose_rule_search_details(api_dir, buckets, names)
+    manifest = {
+        "generated_from": [str(path) for path in db_paths],
+        "source_facts": len(source_facts),
+        "generated_rule_files_added": generated_rules,
+        "unique_dose_rules": logical_count,
+        "subjects_with_dose_rules": len(buckets),
+        "policy": "dose_rules include curated ceilings, explicit label maxima, and review-required overdose-warning-supported screening rules derived from dose candidates.",
+    }
+    write_json(api_dir / "dose-rules" / "manifest.json", manifest)
+    return manifest
+
+
+def update_dose_rule_search_details(api_dir: Path, buckets: dict[str, list[dict[str, Any]]], names: dict[str, str]) -> None:
+    search_path = api_dir / "search" / "index.json"
+    search_index = read_json(search_path, [])
+    by_id = {str(item.get("id")): item for item in search_index if item.get("id")}
+    for subject_id, rows in buckets.items():
+        paths = {
+            "substance": id_path("substances/by-id", subject_id),
+            "interactions": id_path("interactions/by-substance", subject_id),
+            "dose_rules": id_path("dose-rules/by-substance", subject_id),
+            "dose_candidates": id_path("dose-candidates/by-substance", subject_id),
+            "overdose_warnings": id_path("overdose-warnings/by-substance", subject_id),
+        }
+        if subject_id not in by_id:
+            by_id[subject_id] = {
+                "id": subject_id,
+                "name_zh": None,
+                "name_en": names.get(subject_id) or subject_id.replace("_", " ").title(),
+                "category": "DoseRule",
+                "aliases": [],
+                "paths": paths,
+            }
+        else:
+            by_id[subject_id].setdefault("paths", {}).update(paths)
+        detail_path = api_dir / by_id[subject_id]["paths"]["substance"]
+        detail = read_json(detail_path, {})
+        if not detail:
+            detail = {
+                "id": subject_id,
+                "name_zh": by_id[subject_id].get("name_zh"),
+                "name_en": by_id[subject_id].get("name_en"),
+                "category": by_id[subject_id].get("category") or "DoseRule",
+                "aliases": by_id[subject_id].get("aliases") or [],
+                "source_summary": [],
+                "remote_source": API_VERSION,
+            }
+        detail.setdefault("paths", {}).update(by_id[subject_id]["paths"])
+        detail["dose_rule_count"] = len(rows)
+        detail["remote_source"] = API_VERSION
+        write_json(detail_path, detail)
+    rows = sorted(by_id.values(), key=lambda item: ((item.get("name_zh") or item.get("name_en") or item.get("id") or "").lower(), item.get("id") or ""))
+    write_json(search_path, rows)
+
+
 def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0) -> dict[str, Any]:
     dose_by_subject, overdose_by_subject, names = load_overlay_rows(db_paths, max_per_subject=max_per_subject)
     all_subjects = set(dose_by_subject) | set(overdose_by_subject)
@@ -244,6 +435,11 @@ def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0
     search_count = update_search_and_details(api_dir, dose_by_subject, overdose_by_subject, names, identities)
     dose_count = sum(len(rows) for rows in dose_by_subject.values())
     overdose_count = sum(len(rows) for rows in overdose_by_subject.values())
+    manifest_path = api_dir / "manifest.json"
+    manifest = read_json(manifest_path, {})
+    dataset_version = str(manifest.get("dataset_version") or "overlay")
+    dose_rule_overlay = merge_generated_dose_rules(api_dir, db_paths, dataset_version, names)
+    search_count = len(read_json(api_dir / "search" / "index.json", []))
     overlay_manifest = {
         "generated_from": [str(path) for path in db_paths],
         "substances_with_dose_candidates": len(dose_by_subject),
@@ -255,12 +451,11 @@ def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0
     }
     write_json(api_dir / "dose-candidates" / "manifest.json", overlay_manifest)
     write_json(api_dir / "overdose-warnings" / "manifest.json", overlay_manifest)
-    manifest_path = api_dir / "manifest.json"
-    manifest = read_json(manifest_path, {})
     counts = manifest.setdefault("counts", {})
     counts["substances"] = search_count
     counts["dose_candidates"] = dose_count
     counts["overdose_warnings"] = overdose_count
+    counts["dose_rules"] = dose_rule_overlay.get("unique_dose_rules", counts.get("dose_rules", 0))
     paths = manifest.setdefault("paths", {})
     paths["dose_candidates_by_substance"] = "search index item paths.dose_candidates"
     paths["overdose_warnings_by_substance"] = "search index item paths.overdose_warnings"
@@ -272,8 +467,12 @@ def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0
         "manifest": "overdose-warnings/manifest.json",
         "policy": overlay_manifest["policy"],
     }
+    manifest["dose_rule_overlay"] = {
+        "manifest": "dose-rules/manifest.json",
+        "policy": dose_rule_overlay["policy"],
+    }
     write_json(manifest_path, manifest)
-    return overlay_manifest | {"search_substances": search_count}
+    return overlay_manifest | {"search_substances": search_count, "dose_rule_overlay": dose_rule_overlay}
 
 
 def main() -> int:

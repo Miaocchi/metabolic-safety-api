@@ -166,6 +166,7 @@ def cmd_build_remote_source_facts(args: argparse.Namespace) -> int:
         temp_dir=Path(args.temp_dir) if args.temp_dir else None,
         max_records_per_source=args.raw_max_records or 0,
         max_parts_per_source=args.raw_stream_max_parts,
+        workers=args.workers,
     )
     out = Path(args.out)
     write_json(out, [fact.to_dict() for fact in facts])
@@ -235,6 +236,7 @@ def cmd_build_public_api(args: argparse.Namespace) -> int:
             Path(args.raw_dir),
             max_records_per_source=args.raw_max_records or 0,
             max_files_per_source=args.raw_max_files,
+            workers=args.raw_source_workers,
         )
         facts.extend(raw_facts)
         print(f"raw_source_facts={len(raw_facts)}")
@@ -246,6 +248,7 @@ def cmd_build_public_api(args: argparse.Namespace) -> int:
             temp_dir=Path(args.raw_stream_temp_dir) if args.raw_stream_temp_dir else None,
             max_records_per_source=args.raw_max_records or 0,
             max_parts_per_source=args.raw_stream_max_parts,
+            workers=args.raw_source_workers,
         )
         facts.extend(remote_facts)
         print(f"remote_raw_source_facts={len(remote_facts)}")
@@ -351,6 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
     public_api.add_argument("--raw-dir", default="data/raw", help="Directory containing downloaded bulk source files")
     public_api.add_argument("--raw-max-records", type=int, default=100000, help="Max records parsed per local bulk source; 0 means no cap")
     public_api.add_argument("--raw-max-files", type=int, default=0, help="Max files parsed per local bulk source; 0 means all files")
+    public_api.add_argument("--raw-source-workers", type=int, default=0, help="Parallel raw source workers; 0 means auto per source")
     public_api.add_argument("--skip-raw-sources", action="store_true", help="Do not parse locally downloaded bulk source files")
     public_api.add_argument("--stream-raw-sources", action="store_true", help="Download remote bulk source parts one at a time, parse, and delete")
     public_api.add_argument("--raw-stream-sources", default="openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb", help="Comma-separated remote bulk sources to stream")
@@ -401,6 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
     remote_facts.add_argument("--temp-dir", default="")
     remote_facts.add_argument("--raw-max-records", type=int, default=0)
     remote_facts.add_argument("--raw-stream-max-parts", type=int, default=0)
+    remote_facts.add_argument("--workers", type=int, default=0, help="Parallel remote source workers; 0 means auto")
     remote_facts.set_defaults(func=cmd_build_remote_source_facts)
 
     mirror_raw = sub.add_parser(

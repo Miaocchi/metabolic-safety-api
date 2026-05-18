@@ -1,9 +1,13 @@
 from __future__ import annotations
-import argparse, csv, io, json, re, sqlite3, sys, time, xml.etree.ElementTree as ET, zipfile
+import argparse, csv, io, json, os, re, shutil, sqlite3, sys, time, xml.etree.ElementTree as ET, zipfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
+
 from metabolic_safety_etl.raw_sources import (
     extract_chembl_sqlite_archives, extract_cyp_relations, extract_half_life_hours,
     first_attr, first_text, iter_openfda_results, list_values, slugify, spl_sections,
@@ -299,22 +303,137 @@ def analyze_foodrugs(raw,w,max_records=0):
                     if max_records and seen>=max_records: w.summary(source,'partial',seen,time.time()-start,f'max_records={max_records}'); return
     w.summary(source,'done',seen,time.time()-start)
 
+
+ANALYZERS = {
+    'openfda_label': analyze_openfda,
+    'dailymed': analyze_dailymed,
+    'chembl': analyze_chembl,
+    'foodrugs': analyze_foodrugs,
+    'onsides': analyze_onsides,
+    'pharmgkb': analyze_pharmgkb,
+}
+FACT_COLUMNS = (
+    'fact_id', 'source_key', 'fact_type', 'subject_id', 'subject_ids_json', 'name',
+    'section', 'claim_json', 'risk_level', 'confidence', 'source_tier', 'source_name',
+    'source_url', 'evidence_quote', 'extraction_method', 'review_status', 'use_policy', 'updated_at',
+)
+
+
+def source_list(value: str) -> list[str]:
+    return [x.strip() for x in value.split(',') if x.strip()]
+
+
+def clean_final_output(out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    for item in (out / 'structured_facts.sqlite', out / 'structured_facts.sqlite-wal', out / 'structured_facts.sqlite-shm', out / 'summary.json'):
+        if item.exists():
+            item.unlink()
+    shutil.rmtree(out / 'jsonl', ignore_errors=True)
+
+
+def run_source_worker(source: str, raw_dir: str, part_root: str, max_records: int) -> dict[str, Any]:
+    raw = Path(raw_dir)
+    part_out = Path(part_root) / source
+    shutil.rmtree(part_out, ignore_errors=True)
+    w = Writer(part_out)
+    start = time.time()
+    try:
+        ANALYZERS[source](raw, w, max_records)
+        status = 'done'
+        note = ''
+    except Exception as exc:
+        status = 'error'
+        note = f'{type(exc).__name__}: {exc}'
+        w.summary(source, 'error', 0, time.time() - start, note)
+        print(f'error source={source} {note}', flush=True)
+    finally:
+        w.close()
+    return {
+        'source': source,
+        'status': status,
+        'part_out': str(part_out),
+        'db': str(part_out / 'structured_facts.sqlite'),
+        'seconds': round(time.time() - start, 3),
+        'note': note,
+    }
+
+
+def merge_part_outputs(out: Path, sources: list[str]) -> None:
+    clean_final_output(out)
+    w = Writer(out)
+    final_jsonl = out / 'jsonl'
+    final_jsonl.mkdir(parents=True, exist_ok=True)
+    try:
+        for source in sources:
+            part = out / '_source_parts' / source
+            db = part / 'structured_facts.sqlite'
+            if not db.exists():
+                print(f'merge_skip_missing source={source} db={db}', flush=True)
+                continue
+            print(f'merge_source={source} db={db}', flush=True)
+            with sqlite3.connect(db) as conn:
+                conn.row_factory = sqlite3.Row
+                for row in conn.execute(f"SELECT {','.join(FACT_COLUMNS)} FROM facts"):
+                    values = tuple(row[col] for col in FACT_COLUMNS)
+                    cur = w.conn.execute('INSERT OR IGNORE INTO facts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', values)
+                    if cur.rowcount:
+                        w.counts[row['fact_type']] += 1
+                        w.by_source[row['source_key']] += 1
+                for row in conn.execute('SELECT source_key,status,records_seen,facts_written,seconds,note,updated_at FROM run_summary'):
+                    w.conn.execute('INSERT OR REPLACE INTO run_summary VALUES (?,?,?,?,?,?,?)', tuple(row))
+            for src_jsonl in (part / 'jsonl').glob('*.jsonl'):
+                dst = final_jsonl / src_jsonl.name
+                with src_jsonl.open('r', encoding='utf-8', errors='replace') as src, dst.open('a', encoding='utf-8') as target:
+                    shutil.copyfileobj(src, target)
+        w.commit()
+    finally:
+        w.close()
+
 def main():
     ap=argparse.ArgumentParser(description='Analyze mirrored raw pharmacology sources into structured facts')
     ap.add_argument('--raw-dir',default='D:/metabolic-safety-data/raw')
     ap.add_argument('--out-dir',default='D:/metabolic-safety-data/structured')
     ap.add_argument('--sources',default='openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb')
     ap.add_argument('--max-records-per-source',type=int,default=0)
-    args=ap.parse_args(); raw=Path(args.raw_dir); w=Writer(Path(args.out_dir))
-    analyzers={'openfda_label':analyze_openfda,'dailymed':analyze_dailymed,'chembl':analyze_chembl,'foodrugs':analyze_foodrugs,'onsides':analyze_onsides,'pharmgkb':analyze_pharmgkb}
-    try:
-        for s in [x.strip() for x in args.sources.split(',') if x.strip()]:
-            if s not in analyzers: print(f'unsupported source={s}',flush=True); continue
-            try: analyzers[s](raw,w,args.max_records_per_source)
-            except Exception as exc:
-                w.summary(s,'error',0,0.0,f'{type(exc).__name__}: {exc}'); print(f'error source={s} {type(exc).__name__}: {exc}',flush=True)
-    finally: w.close()
-    print(f'structured_db={Path(args.out_dir)/"structured_facts.sqlite"}',flush=True)
-    print(f'summary={Path(args.out_dir)/"summary.json"}',flush=True)
+    ap.add_argument('--workers',type=int,default=0,help='Parallel source workers; 0 means auto, 1 keeps sequential mode')
+    args=ap.parse_args(); raw=Path(args.raw_dir); out=Path(args.out_dir)
+    requested=source_list(args.sources)
+    sources=[]
+    for source in requested:
+        if source not in ANALYZERS:
+            print(f'unsupported source={source}',flush=True)
+            continue
+        sources.append(source)
+    if not sources:
+        raise SystemExit('no supported sources selected')
+    workers=args.workers if args.workers>0 else min(len(sources), max(2, min(os.cpu_count() or 2, 6)))
+    print(f'analysis_mode={"parallel" if workers>1 else "sequential"} workers={workers} sources={sources}',flush=True)
+    if workers<=1:
+        clean_final_output(out)
+        w=Writer(out)
+        try:
+            for source in sources:
+                try: ANALYZERS[source](raw,w,args.max_records_per_source)
+                except Exception as exc:
+                    w.summary(source,'error',0,0.0,f'{type(exc).__name__}: {exc}'); print(f'error source={source} {type(exc).__name__}: {exc}',flush=True)
+        finally: w.close()
+    else:
+        part_root=out/'_source_parts'
+        shutil.rmtree(part_root,ignore_errors=True); part_root.mkdir(parents=True,exist_ok=True)
+        results=[]
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_by_source={executor.submit(run_source_worker,source,str(raw),str(part_root),args.max_records_per_source):source for source in sources}
+            for future in as_completed(future_by_source):
+                source=future_by_source[future]
+                try:
+                    result=future.result()
+                except Exception as exc:
+                    result={'source':source,'status':'error','note':f'{type(exc).__name__}: {exc}'}
+                    print(f'parallel_source_error source={source} {result["note"]}',flush=True)
+                results.append(result)
+                print(f'parallel_source_done {json.dumps(result,ensure_ascii=False,sort_keys=True)}',flush=True)
+        merge_part_outputs(out,sources)
+    print(f'structured_db={out/"structured_facts.sqlite"}',flush=True)
+    print(f'summary={out/"summary.json"}',flush=True)
 
 if __name__=='__main__': raise SystemExit(main())

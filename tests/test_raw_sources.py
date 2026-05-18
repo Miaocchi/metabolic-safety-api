@@ -26,6 +26,7 @@ class RawSourceAdapterTests(unittest.TestCase):
                         },
                         "pharmacokinetics": ["The terminal half-life is 2 to 4 hours. Metabolism is primarily by CYP3A4."],
                         "dosage_and_administration": ["The maximum recommended dosage is 20 mg per day."],
+                        "overdosage": ["OVERDOSAGE may cause coma and respiratory depression."],
                     }
                 ]
             }
@@ -39,6 +40,7 @@ class RawSourceAdapterTests(unittest.TestCase):
             self.assertEqual(pk.claim["half_life_hours"], 3.0)
             self.assertTrue(any(f.fact_type == "enzyme_relation" and f.claim["tag"] == "CYP3A4_substrate" for f in facts))
             self.assertTrue(any(f.fact_type == "dose_candidate" and f.claim["candidate_kind"] == "max_daily_candidate" for f in facts))
+            self.assertTrue(any(f.fact_type == "overdose_warning" for f in facts))
 
     def test_dailymed_xml_extracts_identity_pk_and_cyp(self):
         xml = b'''
@@ -72,6 +74,9 @@ class RawSourceAdapterTests(unittest.TestCase):
               <component><structuredBody><component><section>
                 <title>DOSAGE AND ADMINISTRATION</title>
                 <text>The maximum recommended dosage is 50 mg per day.</text>
+              </section></component><component><section>
+                <title>OVERDOSAGE</title>
+                <text>OVERDOSAGE may cause hypotension and severe sedation.</text>
               </section></component></structuredBody></component>
             </document>
             '''
@@ -85,6 +90,7 @@ class RawSourceAdapterTests(unittest.TestCase):
 
             self.assertTrue(any(f.fact_type == "substance_identity" for f in facts))
             self.assertTrue(any(f.fact_type == "dose_candidate" for f in facts))
+            self.assertTrue(any(f.fact_type == "overdose_warning" for f in facts))
 
 
 

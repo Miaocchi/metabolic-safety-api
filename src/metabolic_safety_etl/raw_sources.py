@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
 import json
 import os
@@ -36,7 +37,7 @@ HALF_LIFE_RE = re.compile(
 )
 
 
-def load_raw_source_facts(raw_dir: Path, max_records_per_source: int = 100_000, max_files_per_source: int = 0) -> tuple[list[EvidenceFact], dict[str, dict[str, Any]]]:
+def load_raw_source_facts(raw_dir: Path, max_records_per_source: int = 100_000, max_files_per_source: int = 0, workers: int = 0) -> tuple[list[EvidenceFact], dict[str, dict[str, Any]]]:
     raw_dir = Path(raw_dir)
     loaders = {
         "openfda_label": lambda: load_openfda_bulk_facts(raw_dir / "openfda_label", max_records_per_source, max_files_per_source),
@@ -48,14 +49,32 @@ def load_raw_source_facts(raw_dir: Path, max_records_per_source: int = 100_000, 
     }
     facts: list[EvidenceFact] = []
     summary: dict[str, dict[str, Any]] = {}
-    for key, loader in loaders.items():
-        try:
-            batch = loader()
-            facts.extend(batch)
-            summary[key] = {"facts": len(batch), "status": "loaded" if batch else "no_local_files"}
-        except Exception as exc:
-            summary[key] = {"facts": 0, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
-    return dedupe_fact_objects(facts), summary
+
+    def run_loader(key: str) -> tuple[str, list[EvidenceFact]]:
+        return key, loaders[key]()
+
+    max_workers = workers if workers > 0 else min(len(loaders), 6)
+    if max_workers <= 1:
+        for key in loaders:
+            try:
+                _, batch = run_loader(key)
+                facts.extend(batch)
+                summary[key] = {"facts": len(batch), "status": "loaded" if batch else "no_local_files"}
+            except Exception as exc:
+                summary[key] = {"facts": 0, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        return dedupe_fact_objects(facts), summary
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_by_key = {executor.submit(run_loader, key): key for key in loaders}
+        for future in as_completed(future_by_key):
+            key = future_by_key[future]
+            try:
+                _, batch = future.result()
+                facts.extend(batch)
+                summary[key] = {"facts": len(batch), "status": "loaded" if batch else "no_local_files"}
+            except Exception as exc:
+                summary[key] = {"facts": 0, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    return dedupe_fact_objects(facts), dict(sorted(summary.items()))
 
 
 def load_openfda_bulk_facts(source_dir: Path, max_records: int = 100_000, max_files: int = 0) -> list[EvidenceFact]:
@@ -166,6 +185,9 @@ def openfda_result_facts(result: dict[str, Any]) -> list[EvidenceFact]:
         )
     ]
     facts.extend(pk_and_enzyme_facts(subject_id, joined_sections(result, OPENFDA_SECTIONS), "openFDA drug label bulk", url, "bulk_json"))
+    overdose_text = joined_sections(result, ("overdosage",))
+    if overdose_text:
+        facts.append(overdose_warning_fact(subject_id, overdose_text, "openFDA drug label bulk", url, "bulk_json", "overdose"))
     for section in OPENFDA_DOSE_SECTIONS:
         section_text = joined_sections(result, (section,))
         if section_text:
@@ -232,10 +254,33 @@ def dailymed_xml_facts(xml_bytes: bytes) -> list[EvidenceFact]:
     sections = list(spl_sections(root))
     text = "\n".join(text for section_title, text in sections if matches_any(section_title, DAILYMED_SECTION_HINTS))
     facts.extend(pk_and_enzyme_facts(subject_id, text, "DailyMed SPL bulk", url, "bulk_spl_xml"))
+    overdose_text = "\n".join(text for section_title, text in sections if matches_any(section_title, ("OVERDOSAGE",)))
+    if overdose_text:
+        facts.append(overdose_warning_fact(subject_id, overdose_text, "DailyMed SPL bulk", url, "bulk_spl_xml", "overdose"))
     dose_text = "\n".join(text for section_title, text in sections if matches_any(section_title, DAILYMED_DOSE_SECTION_HINTS))
     if dose_text:
         facts.extend(extract_dose_candidate_facts(subject_id, dose_text, "DailyMed SPL bulk", url, "bulk_spl_xml", section="dosage"))
     return facts
+
+
+def overdose_warning_fact(subject_id: str, text: str, source_name: str, source_url: str, method: str, section: str) -> EvidenceFact:
+    clean = squash(text)
+    return EvidenceFact(
+        fact_id=f"{slugify(source_name)}_overdose_{stable_hash(subject_id + clean[:1000])}",
+        fact_type="overdose_warning",
+        subject_ids=[subject_id],
+        claim={"overdose_text": clean[:2500], "section": section},
+        risk_level="Major",
+        confidence="Medium",
+        source_tier="Regulatory",
+        source_name=source_name,
+        source_url=source_url,
+        evidence_quote=clean[:1200],
+        extraction_method=f"{method}_overdose_warning",
+        review_status="unreviewed",
+        use_policy="candidate_signal",
+        updated_at=now_utc(),
+    )
 
 
 def pk_and_enzyme_facts(subject_id: str, text: str, source_name: str, source_url: str, method: str) -> list[EvidenceFact]:
@@ -800,6 +845,7 @@ def load_remote_raw_source_facts(
     temp_dir: Path | None = None,
     max_records_per_source: int = 100_000,
     max_parts_per_source: int = 0,
+    workers: int = 0,
 ) -> tuple[list[EvidenceFact], dict[str, dict[str, Any]]]:
     """Download remote bulk packages one part at a time, parse, then delete.
 
@@ -813,21 +859,37 @@ def load_remote_raw_source_facts(
     root.mkdir(parents=True, exist_ok=True)
     all_facts: list[EvidenceFact] = []
     summary: dict[str, dict[str, Any]] = {}
+    def run_stream(key: str) -> tuple[str, list[EvidenceFact], dict[str, Any]]:
+        if key not in REMOTE_RAW_SOURCE_KEYS:
+            return key, [], {"facts": 0, "status": "unsupported"}
+        facts, info = stream_remote_source(key, root / key, max_records_per_source, max_parts_per_source)
+        return key, facts, info
+
     try:
-        for key in requested:
-            if key not in REMOTE_RAW_SOURCE_KEYS:
-                summary[key] = {"facts": 0, "status": "unsupported"}
-                continue
-            try:
-                facts, info = stream_remote_source(key, root / key, max_records_per_source, max_parts_per_source)
-                all_facts.extend(facts)
-                summary[key] = info
-            except Exception as exc:
-                summary[key] = {"facts": 0, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        max_workers = workers if workers > 0 else min(len(requested), 4)
+        if max_workers <= 1:
+            for key in requested:
+                try:
+                    _, facts, info = run_stream(key)
+                    all_facts.extend(facts)
+                    summary[key] = info
+                except Exception as exc:
+                    summary[key] = {"facts": 0, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_by_key = {executor.submit(run_stream, key): key for key in requested}
+                for future in as_completed(future_by_key):
+                    key = future_by_key[future]
+                    try:
+                        _, facts, info = future.result()
+                        all_facts.extend(facts)
+                        summary[key] = info
+                    except Exception as exc:
+                        summary[key] = {"facts": 0, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
     finally:
         if temp_dir is None:
             shutil.rmtree(root, ignore_errors=True)
-    return dedupe_fact_objects(all_facts), summary
+    return dedupe_fact_objects(all_facts), dict(sorted(summary.items()))
 
 
 def stream_remote_source(key: str, work_dir: Path, max_records: int = 100_000, max_parts: int = 0) -> tuple[list[EvidenceFact], dict[str, Any]]:
