@@ -21,6 +21,7 @@ on:
       - "pyproject.toml"
       - ".github/workflows/build-data-api.yml"
       - "site/**"
+      - "tools/**"
 
 permissions:
   contents: read
@@ -210,11 +211,17 @@ jobs:
             echo "ready ${source} $(wc -c < ".cache/metabolic-source-facts/${source}/evidence_facts.json") bytes"
           done
 
-      - name: Build fused seed database and static API
+      - name: Build base seed database and static API
         shell: bash
         run: |
           set -euo pipefail
-          python -m metabolic_safety_etl.cli build-public-api             --ddinter-dir data/raw/ddinter             --out build             --api-out public/api             --skip-raw-sources             --extra-facts .cache/metabolic-source-facts             --max-public-terms 120             --public-limit 2             --public-workers 8             --psychonautwiki-pages 3
+          python -m metabolic_safety_etl.cli build-public-api             --ddinter-dir data/raw/ddinter             --out build             --api-out public/api             --skip-raw-sources             --max-public-terms 120             --public-limit 2             --public-workers 8             --psychonautwiki-pages 3
+
+      - name: Stream source overlays into static API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/export_dose_overlay.py             --api-dir public/api             --fact-json .cache/metabolic-source-facts/openfda_label/evidence_facts.json             --fact-json .cache/metabolic-source-facts/dailymed/evidence_facts.json             --fact-json .cache/metabolic-source-facts/chembl/evidence_facts.json             --fact-json .cache/metabolic-source-facts/foodrugs/evidence_facts.json             --fact-json .cache/metabolic-source-facts/onsides/evidence_facts.json             --fact-json .cache/metabolic-source-facts/pharmgkb/evidence_facts.json
 
       - name: Copy search web UI
         shell: bash
@@ -231,4 +238,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -26,6 +26,47 @@ def read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def iter_json_array(path: Path, chunk_size: int = 1024 * 1024) -> Iterator[dict[str, Any]]:
+    """Stream a top-level JSON array without loading the full source layer."""
+    decoder = json.JSONDecoder()
+    buffer = ""
+    in_array = False
+    with path.open("r", encoding="utf-8-sig", errors="replace") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if chunk:
+                buffer += chunk
+            while True:
+                buffer = buffer.lstrip()
+                if not in_array:
+                    if not buffer:
+                        break
+                    if buffer[0] != "[":
+                        raise ValueError(f"expected JSON array in {path}")
+                    buffer = buffer[1:]
+                    in_array = True
+                    continue
+                buffer = buffer.lstrip()
+                if not buffer:
+                    break
+                if buffer[0] == "]":
+                    return
+                if buffer[0] == ",":
+                    buffer = buffer[1:]
+                    continue
+                try:
+                    item, index = decoder.raw_decode(buffer)
+                except json.JSONDecodeError:
+                    if not chunk:
+                        raise
+                    break
+                if isinstance(item, dict):
+                    yield item
+                buffer = buffer[index:]
+            if not chunk:
+                break
 
 
 def id_path(prefix: str, substance_id: str) -> str:
@@ -98,6 +139,54 @@ def identity_aliases(claim: dict[str, Any]) -> list[str]:
     return out[:12]
 
 
+def fact_subject_id(fact: EvidenceFact) -> str:
+    return str(fact.subject_ids[0] if fact.subject_ids else "unknown")
+
+
+def iter_fact_json(path: Path, fact_types: set[str] | None = None) -> Iterator[EvidenceFact]:
+    if not path.exists():
+        print(f"skip_missing_fact_json={path}")
+        return
+    for item in iter_json_array(path):
+        if fact_types and item.get("fact_type") not in fact_types:
+            continue
+        try:
+            yield EvidenceFact.from_dict(item)
+        except Exception as exc:
+            print(f"skip_fact_json_item={path} error={type(exc).__name__}: {exc}")
+
+
+def compact_dose_candidate_fact(fact: EvidenceFact) -> dict[str, Any]:
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "section": fact.claim.get("section"),
+        "value": fact.claim.get("value"),
+        "value_max": fact.claim.get("value_max"),
+        "unit": fact.claim.get("unit"),
+        "candidate_kind": fact.claim.get("candidate_kind") or "dose_mention",
+        "context": html_safe_excerpt(fact.claim.get("context") or fact.evidence_quote, 900),
+    }
+
+
+def compact_overdose_warning_fact(fact: EvidenceFact) -> dict[str, Any]:
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "risk_level": fact.risk_level or "Major",
+        "section": fact.claim.get("section"),
+        "text": html_safe_excerpt(fact.claim.get("overdose_text") or fact.evidence_quote, 1800),
+    }
+
+
 def iter_rows(db_path: Path, fact_type: str) -> Iterable[sqlite3.Row]:
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -151,6 +240,33 @@ def load_identities(db_paths: list[Path], needed_subjects: set[str]) -> dict[str
                 }
         finally:
             con.close()
+    return identities
+
+
+def load_json_identities(fact_json_paths: list[Path], needed_subjects: set[str], identities: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not needed_subjects:
+        return identities
+    for path in fact_json_paths:
+        for fact in iter_fact_json(path, {"substance_identity"}):
+            sid = fact_subject_id(fact)
+            if sid not in needed_subjects or sid in identities:
+                continue
+            claim = fact.claim
+            identities[sid] = {
+                "id": sid,
+                "name_en": claim.get("name_en") or sid.replace("_", " ").title(),
+                "name_zh": claim.get("name_zh"),
+                "category": claim.get("category") or "DrugLabel",
+                "aliases": identity_aliases(claim),
+                "source_summary": [{
+                    "source_name": fact.source_name,
+                    "source_tier": fact.source_tier,
+                    "source_url": fact.source_url,
+                    "confidence": fact.confidence,
+                    "review_status": fact.review_status,
+                    "risk_level": fact.risk_level,
+                }],
+            }
     return identities
 
 
@@ -221,6 +337,36 @@ def load_overlay_rows(db_paths: list[Path], max_per_subject: int = 0) -> tuple[d
     return dose_by_subject, overdose_by_subject, names
 
 
+def load_overlay_fact_json_rows(fact_json_paths: list[Path], max_per_subject: int = 0) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], dict[str, str]]:
+    dose_by_subject: dict[str, list[dict[str, Any]]] = {}
+    overdose_by_subject: dict[str, list[dict[str, Any]]] = {}
+    names: dict[str, str] = {}
+    seen: set[str] = set()
+    for path in fact_json_paths:
+        loaded = 0
+        for fact in iter_fact_json(path, {"dose_candidate", "overdose_warning"}):
+            if fact.fact_id in seen:
+                continue
+            seen.add(fact.fact_id)
+            sid = fact_subject_id(fact)
+            names.setdefault(sid, sid.replace("_", " ").title())
+            if fact.fact_type == "dose_candidate":
+                bucket = dose_by_subject.setdefault(sid, [])
+                if max_per_subject and len(bucket) >= max_per_subject:
+                    continue
+                bucket.append(compact_dose_candidate_fact(fact))
+            elif fact.fact_type == "overdose_warning":
+                bucket = overdose_by_subject.setdefault(sid, [])
+                if max_per_subject and len(bucket) >= max_per_subject:
+                    continue
+                bucket.append(compact_overdose_warning_fact(fact))
+            loaded += 1
+            if loaded % 50000 == 0:
+                print(f"overlay_fact_json_progress={path} facts={loaded}", flush=True)
+        print(f"overlay_fact_json_loaded={path} facts={loaded}", flush=True)
+    return dose_by_subject, overdose_by_subject, names
+
+
 def update_search_and_details(api_dir: Path, dose_by_subject: dict[str, list[dict[str, Any]]], overdose_by_subject: dict[str, list[dict[str, Any]]], names: dict[str, str], identities: dict[str, dict[str, Any]]) -> int:
     search_path = api_dir / "search" / "index.json"
     search_index = read_json(search_path, [])
@@ -271,7 +417,7 @@ def update_search_and_details(api_dir: Path, dose_by_subject: dict[str, list[dic
     return len(rows)
 
 
-def load_rule_source_facts(db_paths: list[Path]) -> list[EvidenceFact]:
+def load_rule_source_facts(db_paths: list[Path], fact_json_paths: list[Path] | None = None) -> list[EvidenceFact]:
     facts: list[EvidenceFact] = []
     seen: set[str] = set()
     for db_path in db_paths:
@@ -284,6 +430,17 @@ def load_rule_source_facts(db_paths: list[Path]) -> list[EvidenceFact]:
                     continue
                 seen.add(fid)
                 facts.append(row_to_fact(row))
+    for path in fact_json_paths or []:
+        loaded = 0
+        for fact in iter_fact_json(path, {"dose_candidate", "overdose_warning"}):
+            if fact.fact_id in seen:
+                continue
+            seen.add(fact.fact_id)
+            facts.append(fact)
+            loaded += 1
+            if loaded % 50000 == 0:
+                print(f"dose_rule_fact_json_progress={path} facts={loaded}", flush=True)
+        print(f"dose_rule_fact_json_loaded={path} facts={loaded}", flush=True)
     return facts
 
 
@@ -332,8 +489,8 @@ def load_existing_rule_buckets(api_dir: Path) -> dict[str, list[dict[str, Any]]]
     return buckets
 
 
-def merge_generated_dose_rules(api_dir: Path, db_paths: list[Path], dataset_version: str, names: dict[str, str]) -> dict[str, Any]:
-    source_facts = load_rule_source_facts(db_paths)
+def merge_generated_dose_rules(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], dataset_version: str, names: dict[str, str]) -> dict[str, Any]:
+    source_facts = load_rule_source_facts(db_paths, fact_json_paths)
     generated_facts = extract_dose_rule_facts(source_facts)
     buckets = load_existing_rule_buckets(api_dir)
     generated_rules = 0
@@ -370,7 +527,7 @@ def merge_generated_dose_rules(api_dir: Path, db_paths: list[Path], dataset_vers
     logical_count = len(unique_rule_ids)
     update_dose_rule_search_details(api_dir, buckets, names)
     manifest = {
-        "generated_from": [str(path) for path in db_paths],
+        "generated_from": [str(path) for path in [*db_paths, *fact_json_paths]],
         "source_facts": len(source_facts),
         "generated_rule_files_added": generated_rules,
         "unique_dose_rules": logical_count,
@@ -426,8 +583,35 @@ def update_dose_rule_search_details(api_dir: Path, buckets: dict[str, list[dict[
 
 def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0) -> dict[str, Any]:
     dose_by_subject, overdose_by_subject, names = load_overlay_rows(db_paths, max_per_subject=max_per_subject)
+    return export_overlay_from_maps(api_dir, db_paths, [], dose_by_subject, overdose_by_subject, names, max_per_subject)
+
+
+def export_overlay_from_sources(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], max_per_subject: int = 0) -> dict[str, Any]:
+    dose_by_subject, overdose_by_subject, names = load_overlay_rows(db_paths, max_per_subject=max_per_subject)
+    json_dose_by_subject, json_overdose_by_subject, json_names = load_overlay_fact_json_rows(fact_json_paths, max_per_subject=max_per_subject)
+    merge_subject_maps(dose_by_subject, json_dose_by_subject)
+    merge_subject_maps(overdose_by_subject, json_overdose_by_subject)
+    names.update({key: value for key, value in json_names.items() if key not in names})
+    return export_overlay_from_maps(api_dir, db_paths, fact_json_paths, dose_by_subject, overdose_by_subject, names, max_per_subject)
+
+
+def merge_subject_maps(target: dict[str, list[dict[str, Any]]], incoming: dict[str, list[dict[str, Any]]]) -> None:
+    for subject_id, rows in incoming.items():
+        bucket = target.setdefault(subject_id, [])
+        seen = {str(item.get("fact_id")) for item in bucket if item.get("fact_id")}
+        for row in rows:
+            fact_id = str(row.get("fact_id") or "")
+            if fact_id and fact_id in seen:
+                continue
+            bucket.append(row)
+            if fact_id:
+                seen.add(fact_id)
+
+
+def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_paths: list[Path], dose_by_subject: dict[str, list[dict[str, Any]]], overdose_by_subject: dict[str, list[dict[str, Any]]], names: dict[str, str], max_per_subject: int = 0) -> dict[str, Any]:
     all_subjects = set(dose_by_subject) | set(overdose_by_subject)
     identities = load_identities(db_paths, all_subjects)
+    identities = load_json_identities(fact_json_paths, all_subjects, identities)
     for sid, rows in dose_by_subject.items():
         write_json(api_dir / id_path("dose-candidates/by-substance", sid), rows)
     for sid, rows in overdose_by_subject.items():
@@ -438,10 +622,10 @@ def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0
     manifest_path = api_dir / "manifest.json"
     manifest = read_json(manifest_path, {})
     dataset_version = str(manifest.get("dataset_version") or "overlay")
-    dose_rule_overlay = merge_generated_dose_rules(api_dir, db_paths, dataset_version, names)
+    dose_rule_overlay = merge_generated_dose_rules(api_dir, db_paths, fact_json_paths, dataset_version, names)
     search_count = len(read_json(api_dir / "search" / "index.json", []))
     overlay_manifest = {
-        "generated_from": [str(path) for path in db_paths],
+        "generated_from": [str(path) for path in [*db_paths, *fact_json_paths]],
         "substances_with_dose_candidates": len(dose_by_subject),
         "substances_with_overdose_warnings": len(overdose_by_subject),
         "dose_candidates": dose_count,
@@ -476,13 +660,17 @@ def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Export dose candidates and overdosage warnings from local structured SQLite facts into static API overlay files.")
+    parser = argparse.ArgumentParser(description="Export dose candidates and overdosage warnings from structured SQLite or streamed EvidenceFact JSON into static API overlay files.")
     parser.add_argument("--api-dir", default="public/api")
-    parser.add_argument("--structured-db", action="append", required=True)
+    parser.add_argument("--structured-db", action="append", default=[])
+    parser.add_argument("--fact-json", action="append", default=[], help="EvidenceFact JSON array to stream; can be repeated")
     parser.add_argument("--max-per-substance", type=int, default=0)
     args = parser.parse_args()
     db_paths = [Path(item) for item in args.structured_db]
-    summary = export_overlay(Path(args.api_dir), db_paths, max_per_subject=args.max_per_substance)
+    fact_json_paths = [Path(item) for item in args.fact_json]
+    if not db_paths and not fact_json_paths:
+        raise SystemExit("at least one --structured-db or --fact-json is required")
+    summary = export_overlay_from_sources(Path(args.api_dir), db_paths, fact_json_paths, max_per_subject=args.max_per_substance)
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
