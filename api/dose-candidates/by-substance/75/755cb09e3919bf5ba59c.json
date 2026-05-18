@@ -1,0 +1,1 @@
+[{"candidate_kind":"dose_mention","confidence":"Low","context":"DOSAGE Approximately 1.5ml each time","fact_id":"openfda_label_dose_candidate_9ed6cacd66150dfc3295","section":"dosage","source_key":"openfda_label","source_name":"openFDA drug label bulk","source_tier":"Regulatory","source_url":"https://open.fda.gov/apis/drug/label/","unit":"ml","value":1.5,"value_max":null}]

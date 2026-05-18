@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>代谢安全数据 API</title>
+  <meta name="description" content="融合本地结构化药物、相互作用、剂量候选和过量警告的静态查询页。">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-shell header-band">
+    <div class="brand-row">
+      <div class="brand-mark" aria-hidden="true">MS</div>
+      <div>
+        <h1>代谢安全数据 API</h1>
+        <p id="apiMeta">正在加载静态 API...</p>
+      </div>
+    </div>
+    <nav class="top-links" aria-label="静态 API 链接">
+      <a href="api/manifest.json">Manifest</a>
+      <a href="api/sources/index.json">来源</a>
+      <a href="api/dose-candidates/manifest.json">剂量候选</a>
+      <a href="api/overdose-warnings/manifest.json">过量警告</a>
+      <a href="api/packages/full/manifest.json">全量包</a>
+    </nav>
+  </header>
+
+  <main class="app-shell">
+    <section class="search-panel" aria-label="药物搜索">
+      <label for="searchInput">搜索药物中文名、英文名、别名或 ID</label>
+      <div class="search-row">
+        <input id="searchInput" type="search" autocomplete="off" placeholder="劳拉西泮 / Lorazepam / warfarin / caffeine">
+        <button id="clearSearch" type="button">清空</button>
+      </div>
+      <div id="statusLine" class="status-line" role="status">等待数据加载</div>
+    </section>
+
+    <section class="stats-grid" aria-label="数据统计">
+      <div><span>药物实体</span><strong id="substanceCount">0</strong></div>
+      <div><span>相互作用</span><strong id="interactionCount">0</strong></div>
+      <div><span>剂量规则</span><strong id="doseCount">0</strong></div>
+      <div><span>剂量候选</span><strong id="candidateCount">0</strong></div>
+      <div><span>过量警告</span><strong id="overdoseCount">0</strong></div>
+      <div><span>数据来源</span><strong id="sourceCount">0</strong></div>
+    </section>
+
+    <section class="content-grid">
+      <div class="results-column">
+        <div class="section-title">
+          <h2>搜索结果</h2>
+          <span id="resultCount">0 条</span>
+        </div>
+        <div id="results" class="result-list empty">加载中...</div>
+      </div>
+
+      <div class="detail-column">
+        <div class="section-title">
+          <h2>详情</h2>
+          <span id="detailBadge">未选择</span>
+        </div>
+        <article id="detail" class="detail-card empty">请选择药物查看来源、PK 线索、相互作用、剂量候选和过量警告。</article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-shell footer-note">
+    <p>说明：本页是 GitHub Pages 静态 JSON API 的在线检索层。dose_candidate / overdose_warning 是从标签文本和结构化库抽取的证据候选，不等于最终可直接报警的 dose_rule；本地应用可按置信度和规则归一化后再用于过量提示。</p>
+  </footer>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+[{"candidate_kind":"dose_mention","confidence":"Low","context":"DOSAGE ERROR HAS OCCURRED 1g","fact_id":"openfda_label_dose_candidate_79efa1ad44372cd41989","section":"dosage","source_key":"openfda_label","source_name":"openFDA drug label bulk","source_tier":"Regulatory","source_url":"https://open.fda.gov/apis/drug/label/","unit":"g","value":1.0,"value_max":null}]

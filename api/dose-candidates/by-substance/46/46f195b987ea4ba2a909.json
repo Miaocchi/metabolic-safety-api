@@ -1,0 +1,1 @@
+[{"candidate_kind":"dose_mention","confidence":"Low","context":"DELIVERS 20 ML","fact_id":"openfda_label_dose_candidate_5d0f877deeea3f1aab29","section":"dosage","source_key":"openfda_label","source_name":"openFDA drug label bulk","source_tier":"Regulatory","source_url":"https://open.fda.gov/apis/drug/label/","unit":"ML","value":20.0,"value_max":null}]

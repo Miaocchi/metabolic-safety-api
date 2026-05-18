@@ -1,0 +1,1 @@
+{"dataset_version":"2026-05-18","dose_rule_count":0,"id":"paracetamol","interaction_count":0,"name_en":"Paracetamol","paths":{"dose_rules":"dose-rules/by-substance/54/54238e9415df5dffbf4b.json","interactions":"interactions/by-substance/54/54238e9415df5dffbf4b.json","substance":"substances/by-id/54/54238e9415df5dffbf4b.json"},"remote_source":"static-drug-api-v1"}

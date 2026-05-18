@@ -1,0 +1,1 @@
+[{"candidate_kind":"dose_mention","confidence":"Low","context":"DOSAGE Injections: 1.1 ml ampule","fact_id":"openfda_label_dose_candidate_cd104ad1c3da3c7a5fe9","section":"dosage","source_key":"openfda_label","source_name":"openFDA drug label bulk","source_tier":"Regulatory","source_url":"https://open.fda.gov/apis/drug/label/","unit":"ml","value":1.1,"value_max":null}]
