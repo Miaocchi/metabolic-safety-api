@@ -1,7 +1,12 @@
 const state = {
   manifest: null,
+  searchManifest: null,
   sourceIndex: null,
   searchIndex: [],
+  searchShardCache: new Map(),
+  activeRows: [],
+  renderToken: 0,
+  searchDebounce: 0,
   activeId: "",
   query: "",
 };
@@ -151,6 +156,39 @@ function compactText(value) {
   return normalizeText(value).replace(/\s+/g, "");
 }
 
+function searchShardKey(value) {
+  const text = compactText(value);
+  if (!text) return "other";
+  const codePoint = text.codePointAt(0);
+  const char = String.fromCodePoint(codePoint);
+  if (/^[a-z0-9]$/i.test(char)) {
+    const prefix = Array.from(text).filter((part) => /^[a-z0-9]$/i.test(part)).join("").slice(0, 2);
+    return (prefix || char).toLocaleLowerCase("en-US");
+  }
+  return `u${codePoint.toString(16).padStart(4, "0")}`;
+}
+
+function searchShardKeysForQuery(query) {
+  const normalized = normalizeText(query);
+  const compact = compactText(query);
+  const terms = [normalized, ...normalized.split(" ").filter(Boolean)];
+  if (compact && compact !== normalized) terms.push(compact);
+  if (compact && !/^[\x00-\x7F]+$/.test(compact)) {
+    terms.push(...Array.from(compact).slice(0, 4));
+  }
+  const keys = [];
+  const seen = new Set();
+  for (const term of terms) {
+    const key = searchShardKey(term);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+    if (keys.length >= 6) break;
+  }
+  return keys.length ? keys : ["other"];
+}
+
+
 function aliasesOf(item) {
   if (Array.isArray(item?.aliases)) return item.aliases.filter(Boolean).map(String);
   if (item?.aliases) return [String(item.aliases)];
@@ -186,7 +224,8 @@ function setStatus(message, isError = false) {
 
 function updateStats() {
   const counts = state.manifest?.counts || {};
-  $("substanceCount").textContent = formatNumber(counts.substances || state.searchIndex.length);
+  const substanceTotal = counts.substances || state.searchManifest?.items || state.searchIndex.length;
+  $("substanceCount").textContent = formatNumber(substanceTotal);
   $("interactionCount").textContent = formatNumber(counts.interactions || 0);
   $("doseCount").textContent = formatNumber(counts.dose_rules || 0);
   $("candidateCount").textContent = formatNumber(counts.dose_candidates || 0);
@@ -202,7 +241,7 @@ function updateStats() {
     || state.manifest?.full_package?.zip_bytes
     || 0;
   const packageText = packageBytes ? ` \u00b7 \u5168\u91cf\u5305 ${(packageBytes / 1024 / 1024).toFixed(1)} MB` : "";
-  $("apiMeta").textContent = `\u5df2\u52a0\u8f7d \u00b7 ${formatNumber(counts.substances || state.searchIndex.length)} \u4e2a\u836f\u7269\u5b9e\u4f53 \u00b7 ${formatNumber(counts.interactions || 0)} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${formatNumber(counts.drug_effects || 0)} \u6761\u836f\u6548/\u673a\u5236 \u00b7 ${formatNumber(counts.dose_candidates || 0)} \u6761\u5242\u91cf\u5019\u9009 \u00b7 ${formatNumber(counts.overdose_warnings || 0)} \u6761\u8fc7\u91cf\u8b66\u544a${packageText}`;
+  $("apiMeta").textContent = `\u5df2\u52a0\u8f7d \u00b7 ${formatNumber(substanceTotal)} \u4e2a\u836f\u7269\u5b9e\u4f53 \u00b7 ${formatNumber(counts.interactions || 0)} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${formatNumber(counts.drug_effects || 0)} \u6761\u836f\u6548/\u673a\u5236 \u00b7 ${formatNumber(counts.dose_candidates || 0)} \u6761\u5242\u91cf\u5019\u9009 \u00b7 ${formatNumber(counts.overdose_warnings || 0)} \u6761\u8fc7\u91cf\u8b66\u544a${packageText}`;
 }
 
 function scoreItem(item, query) {
@@ -221,26 +260,60 @@ function scoreItem(item, query) {
   return 0;
 }
 
-function search(query) {
+async function fetchSearchShard(key) {
+  const shardKey = key || "other";
+  if (state.searchShardCache.has(shardKey)) return state.searchShardCache.get(shardKey);
+  const knownCount = state.searchManifest?.shards?.[shardKey];
+  if (state.searchManifest && !knownCount) {
+    state.searchShardCache.set(shardKey, []);
+    return [];
+  }
+  const template = state.searchManifest?.shard_path || "search/shards/{key}.json";
+  const rows = await safeFetch(template.replace("{key}", encodeURIComponent(shardKey)));
+  state.searchShardCache.set(shardKey, rows);
+  return rows;
+}
+
+
+async function search(query) {
   const q = query.trim();
-  if (!q) return state.searchIndex.slice(0, 24).map((item) => ({ item, score: 1 }));
-  return state.searchIndex
+  if (!q) return [];
+  const keys = searchShardKeysForQuery(q);
+  const batches = await Promise.all(keys.map((key) => fetchSearchShard(key)));
+  const byId = new Map();
+  for (const rows of batches) {
+    for (const item of rows) {
+      if (item?.id) byId.set(item.id, item);
+    }
+  }
+  return Array.from(byId.values())
     .map((item) => ({ item, score: scoreItem(item, q) }))
     .filter((row) => row.score > 0)
     .sort((a, b) => b.score - a.score || displayName(a.item).localeCompare(displayName(b.item), "zh-CN"))
     .slice(0, 80);
 }
 
-function renderResults() {
-  const rows = search(state.query);
+function renderSearchPrompt() {
+  state.activeRows = [];
+  const list = $("results");
+  $("resultCount").textContent = "0 \u6761";
+  list.className = "result-list empty";
+  list.textContent = "\u8f93\u5165\u4e2d\u6587\u540d\u3001\u82f1\u6587\u540d\u3001\u522b\u540d\u6216 ID \u540e\u68c0\u7d22\uff1b\u9875\u9762\u4e0d\u4f1a\u518d\u6253\u5f00\u65f6\u52a0\u8f7d\u5168\u91cf\u7d22\u5f15\u3002";
+  const total = state.searchManifest?.items || state.manifest?.counts?.substances || 0;
+  setStatus(`\u5df2\u52a0\u8f7d API \u5143\u6570\u636e \u00b7 ${formatNumber(total)} \u4e2a\u5b9e\u4f53 \u00b7 \u641c\u7d22\u65f6\u6309\u5206\u7247\u8bfb\u53d6\u3002`);
+}
+
+function renderResultRows(rows = state.activeRows) {
   const list = $("results");
   $("resultCount").textContent = `${rows.length} \u6761`;
-  if (!state.query.trim() && rows.length) {
-    setStatus(`\u5df2\u52a0\u8f7d ${formatNumber(state.searchIndex.length)} \u4e2a\u836f\u7269\u5b9e\u4f53\uff0c\u8bf7\u8f93\u5165\u5173\u952e\u8bcd\u68c0\u7d22\u3002`);
-  } else if (rows.length) {
+  if (!state.query.trim()) {
+    renderSearchPrompt();
+    return;
+  }
+  if (rows.length) {
     setStatus(`\u547d\u4e2d ${formatNumber(rows.length)} \u6761\u7ed3\u679c\uff0c\u9009\u62e9\u540e\u67e5\u770b\u8bc1\u636e\u3002`);
   } else {
-    setStatus("\u672a\u547d\u4e2d\u3002\u53ef\u5c1d\u8bd5\u82f1\u6587\u901a\u7528\u540d\u3001RxNorm \u6216\u539f\u59cb ID\u3002", true);
+    setStatus("\u672a\u547d\u4e2d\u3002\u53ef\u5c1d\u8bd5\u82f1\u6587\u901a\u7528\u540d\u3001\u4e2d\u6587\u540d\u3001RxNorm \u6216\u539f\u59cb ID\u3002", true);
   }
   if (!rows.length) {
     list.className = "result-list empty";
@@ -269,9 +342,44 @@ function renderResults() {
   }
 }
 
+async function renderResults() {
+  const token = ++state.renderToken;
+  const q = state.query.trim();
+  if (!q) {
+    renderSearchPrompt();
+    return [];
+  }
+  $("results").className = "result-list empty";
+  $("results").textContent = "\u6b63\u5728\u8bfb\u53d6\u7d22\u5f15\u5206\u7247...";
+  $("resultCount").textContent = "...";
+  setStatus(`\u6b63\u5728\u6309\u5206\u7247\u68c0\u7d22\u300c${q}\u300d...`);
+  const rows = await search(q);
+  if (token !== state.renderToken) return [];
+  state.activeRows = rows;
+  renderResultRows(rows);
+  return rows;
+}
+
+function scheduleRenderResults(delay = 120) {
+  window.clearTimeout(state.searchDebounce);
+  state.searchDebounce = window.setTimeout(() => {
+    renderResults();
+  }, delay);
+}
+
+async function findSearchItemById(id, preferredQuery = "") {
+  const keys = searchShardKeysForQuery(preferredQuery || id);
+  const batches = await Promise.all(keys.map((key) => fetchSearchShard(key)));
+  for (const rows of batches) {
+    const hit = rows.find((item) => item?.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 async function selectItem(item) {
   state.activeId = item.id;
-  renderResults();
+  renderResultRows(state.activeRows);
   $("detailBadge").textContent = ui.loading;
   $("detail").className = "detail-card empty";
   $("detail").textContent = ui.loading;
@@ -518,35 +626,40 @@ function renderSources(rows) {
 function bindEvents() {
   $("searchInput").addEventListener("input", (event) => {
     state.query = event.target.value;
-    renderResults();
+    scheduleRenderResults();
   });
-  $("searchInput").addEventListener("keydown", (event) => {
+  $("searchInput").addEventListener("keydown", async (event) => {
     if (event.key !== "Enter") return;
-    const first = search(state.query)[0]?.item;
+    event.preventDefault();
+    window.clearTimeout(state.searchDebounce);
+    const rows = await renderResults();
+    const first = rows[0]?.item;
     if (first) selectItem(first);
   });
   $("clearSearch").addEventListener("click", () => {
+    window.clearTimeout(state.searchDebounce);
     state.query = "";
     state.activeId = "";
+    state.activeRows = [];
     $("searchInput").value = "";
     $("detailBadge").textContent = "\u672a\u9009\u62e9";
     $("detail").className = "detail-card empty";
     $("detail").textContent = "\u8bf7\u9009\u62e9\u836f\u7269\u67e5\u770b\u836f\u6548/\u673a\u5236\u3001PK \u7ebf\u7d22\u3001CYP \u5173\u7cfb\u3001\u76f8\u4e92\u4f5c\u7528\u3001\u5242\u91cf\u5019\u9009\u548c\u8fc7\u91cf\u8b66\u544a\u3002";
     history.replaceState(null, "", window.location.pathname);
-    renderResults();
+    renderSearchPrompt();
   });
 }
 
 async function boot() {
   bindEvents();
   try {
-    const [manifest, index, sources] = await Promise.all([
+    const [manifest, searchManifest, sources] = await Promise.all([
       fetchJson("manifest.json"),
-      fetchJson("search/index.json"),
+      fetchJson("search/manifest.json").catch(() => null),
       fetchJson("sources/index.json").catch(() => null),
     ]);
     state.manifest = manifest;
-    state.searchIndex = Array.isArray(index) ? index : [];
+    state.searchManifest = searchManifest;
     state.sourceIndex = sources;
     updateStats();
     const params = new URLSearchParams(window.location.search);
@@ -554,10 +667,19 @@ async function boot() {
     const id = params.get("id") || "";
     state.query = q;
     $("searchInput").value = q;
-    renderResults();
     if (id) {
-      const item = state.searchIndex.find((row) => row.id === id);
+      const item = await findSearchItemById(id, q);
+      if (q) await renderResults();
+      else {
+        state.activeRows = item ? [{ item, score: 100 }] : [];
+        renderResultRows(state.activeRows);
+      }
       if (item) await selectItem(item);
+      else if (!q) renderSearchPrompt();
+    } else if (q) {
+      await renderResults();
+    } else {
+      renderSearchPrompt();
     }
   } catch (error) {
     setStatus(error.message || String(error), true);

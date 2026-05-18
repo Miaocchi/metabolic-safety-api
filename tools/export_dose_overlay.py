@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 import sys
 from typing import Any, Iterable, Iterator
@@ -880,6 +881,96 @@ def update_dose_rule_search_details(api_dir: Path, buckets: dict[str, list[dict[
     write_json(search_path, rows)
 
 
+
+def normalize_search_term(value: Any) -> str:
+    return " ".join(str(value or "").lower().replace("_", " ").replace("-", " ").split())
+
+
+def search_shard_key(value: Any) -> str:
+    text = normalize_search_term(value).replace(" ", "")
+    if not text:
+        return "other"
+    char = text[0]
+    if char.isascii() and char.isalnum():
+        prefix = "".join(ch.lower() for ch in text if ch.isascii() and ch.isalnum())[:2]
+        return prefix or char.lower()
+    return f"u{ord(char):04x}"
+
+
+def search_terms_for_item(item: dict[str, Any]) -> list[str]:
+    aliases = item.get("aliases") or []
+    if isinstance(aliases, str):
+        aliases = [part.strip() for part in aliases.replace("|", ",").split(",") if part.strip()]
+    terms = [item.get("id"), item.get("name_zh"), item.get("name_en"), *aliases[:8]]
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        normalized = normalize_search_term(term)
+        if not normalized:
+            continue
+        pieces = [normalized]
+        for token in normalized.split():
+            if len(token) >= 4 and not token.isdigit() and any(char.isalpha() for char in token):
+                pieces.append(token)
+        compact = normalized.replace(" ", "")
+        if compact and not compact.isascii():
+            pieces.extend(list(compact)[:6])
+        for piece in pieces:
+            key = piece.strip()
+            if key and key not in seen:
+                seen.add(key)
+                out.append(key)
+    return out
+
+
+def compact_search_item(item: dict[str, Any]) -> dict[str, Any]:
+    aliases = item.get("aliases") or []
+    if isinstance(aliases, str):
+        aliases = [part.strip() for part in aliases.replace("|", ",").split(",") if part.strip()]
+    paths = item.get("paths") or {}
+    compact_paths = {"substance": paths.get("substance")} if isinstance(paths, dict) and paths.get("substance") else {}
+    return {
+        "id": item.get("id"),
+        "name_zh": item.get("name_zh"),
+        "name_en": item.get("name_en"),
+        "category": item.get("category"),
+        "aliases": aliases[:8] if isinstance(aliases, list) else [],
+        "paths": compact_paths,
+    }
+
+
+def export_search_lookup(api_dir: Path) -> dict[str, Any]:
+    search_path = api_dir / "search" / "index.json"
+    rows = read_json(search_path, [])
+    if not isinstance(rows, list):
+        rows = []
+    shard_root = api_dir / "search" / "shards"
+    shutil.rmtree(shard_root, ignore_errors=True)
+    shards: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in rows:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        compact = compact_search_item(item)
+        keys = {search_shard_key(term) for term in search_terms_for_item(compact)}
+        if not keys:
+            keys = {"other"}
+        for key in keys:
+            shards.setdefault(key, {})[str(compact["id"])] = compact
+    shard_summary: dict[str, int] = {}
+    for key, by_id in sorted(shards.items()):
+        payload = sorted(by_id.values(), key=lambda item: ((item.get("name_zh") or item.get("name_en") or item.get("id") or "").lower(), item.get("id") or ""))
+        write_json(shard_root / f"{key}.json", payload)
+        shard_summary[key] = len(payload)
+    manifest = {
+        "items": len(rows),
+        "shards": shard_summary,
+        "shard_path": "search/shards/{key}.json",
+        "policy": "Search UI should load shard files by query prefix instead of parsing the full search/index.json on page open.",
+    }
+    write_json(api_dir / "search" / "manifest.json", manifest)
+    return manifest
+
+
 def export_overlay(api_dir: Path, db_paths: list[Path], max_per_subject: int = 0, max_content_per_subject: int = 24) -> dict[str, Any]:
     dose_by_subject, overdose_by_subject, names = load_overlay_rows(db_paths, max_per_subject=max_per_subject)
     return export_overlay_from_maps(api_dir, db_paths, [], dose_by_subject, overdose_by_subject, names, max_per_subject, max_content_per_subject)
@@ -949,6 +1040,14 @@ def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_path
     paths["drug_effects_by_substance"] = "search index item paths.drug_effects"
     paths["pharmacokinetics_by_substance"] = "search index item paths.pharmacokinetics"
     paths["enzyme_relations_by_substance"] = "search index item paths.enzyme_relations"
+    paths["search_shards"] = "search/shards/{key}.json"
+    search_overlay = export_search_lookup(api_dir)
+    manifest["search_overlay"] = {
+        "manifest": "search/manifest.json",
+        "items": search_overlay.get("items", 0),
+        "shards": len(search_overlay.get("shards", {})),
+        "policy": search_overlay.get("policy"),
+    }
     manifest["dose_candidate_overlay"] = {
         "manifest": "dose-candidates/manifest.json",
         "policy": overlay_manifest["policy"],

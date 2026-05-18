@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>代谢安全数据 API</title>
   <meta name="description" content="融合本地结构化药物、药效、PK、相互作用、剂量候选和过量警告的静态查询页。">
-  <link rel="stylesheet" href="styles.css?v=20260518-effect1">
+  <link rel="stylesheet" href="styles.css?v=20260518-shards1">
 </head>
 <body>
   <header class="app-shell header-band">
@@ -13,7 +13,7 @@
       <div class="brand-mark" aria-hidden="true">MS</div>
       <div>
         <h1>代谢安全数据 API</h1>
-        <p id="apiMeta">正在加载静态 API...</p>
+        <p id="apiMeta">正在加载静态 API 元数据...</p>
       </div>
     </div>
     <nav class="top-links" aria-label="静态 API 链接">
@@ -23,6 +23,7 @@
       <a href="api/pharmacokinetics/manifest.json">PK</a>
       <a href="api/dose-candidates/manifest.json">剂量候选</a>
       <a href="api/overdose-warnings/manifest.json">过量警告</a>
+      <a href="api/search/manifest.json">搜索分片</a>
       <a href="api/packages/full/manifest.json">全量包</a>
     </nav>
   </header>
@@ -34,7 +35,7 @@
         <input id="searchInput" type="search" autocomplete="off" placeholder="舍曲林 / Sertraline / Lorazepam / warfarin / caffeine">
         <button id="clearSearch" type="button">清空</button>
       </div>
-      <div id="statusLine" class="status-line" role="status">等待数据加载</div>
+      <div id="statusLine" class="status-line" role="status">等待 API 元数据加载</div>
     </section>
 
     <section class="stats-grid" aria-label="数据统计">
@@ -54,7 +55,7 @@
           <h2>搜索结果</h2>
           <span id="resultCount">0 条</span>
         </div>
-        <div id="results" class="result-list empty">加载中...</div>
+        <div id="results" class="result-list empty">输入关键词后按分片检索。</div>
       </div>
 
       <div class="detail-column">
@@ -68,9 +69,9 @@
   </main>
 
   <footer class="app-shell footer-note">
-    <p>说明：本页是 GitHub Pages 静态 JSON API 的在线检索层。drug_effect / pharmacokinetics / enzyme_relation / dose_candidate / overdose_warning 都是从监管标签、ChEMBL 和结构化库抽取的证据候选；本地应用可按置信度和规则归一化后再用于提示。</p>
+    <p>说明：本页是 GitHub Pages 静态 JSON API 的在线检索层。搜索页默认只读取元数据和索引分片，不在打开页面时解析全量搜索索引。</p>
   </footer>
 
-  <script src="app.js?v=20260518-effect1" defer></script>
+  <script src="app.js?v=20260518-shards1" defer></script>
 </body>
 </html>
