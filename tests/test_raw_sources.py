@@ -7,7 +7,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from metabolic_safety_etl.raw_sources import dailymed_xml_facts, load_chembl_bulk_facts, load_dailymed_bulk_facts, load_openfda_bulk_facts, load_remote_raw_source_facts
+from metabolic_safety_etl.raw_sources import dailymed_xml_facts, load_chembl_bulk_facts, load_dailymed_bulk_facts, load_openfda_bulk_facts, load_remote_raw_source_facts, write_remote_raw_source_facts_json
 
 
 class RawSourceAdapterTests(unittest.TestCase):
@@ -156,6 +156,41 @@ class RawSourceAdapterTests(unittest.TestCase):
             self.assertEqual(summary["openfda_label"]["downloaded_parts"], 1)
             self.assertTrue(any(f.fact_type == "substance_identity" for f in facts))
             self.assertTrue(any(f.fact_type == "pharmacokinetics" and f.claim["half_life_hours"] == 6.0 for f in facts))
+
+
+    def test_remote_stream_writer_outputs_valid_json_without_accumulating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_zip = root / "remote-openfda.zip"
+            payload = {
+                "results": [
+                    {
+                        "set_id": "remote-writer-1",
+                        "openfda": {"generic_name": ["Remote Writer Drug"]},
+                        "mechanism_of_action": ["Remote Writer Drug inhibits a transporter."],
+                    }
+                ]
+            }
+            with zipfile.ZipFile(source_zip, "w") as archive:
+                archive.writestr("drug-label-0001.json", json.dumps(payload))
+
+            def fake_manifest(key):
+                self.assertEqual(key, "openfda_label")
+                return {"parts": [{"name": "remote.zip", "url": "https://example.test/remote.zip"}], "source_url": "test"}
+
+            def fake_download(url, target):
+                self.assertEqual(url, "https://example.test/remote.zip")
+                shutil.copyfile(source_zip, target)
+
+            out_path = root / "facts.json"
+            summary_path = root / "summary.json"
+            with patch("metabolic_safety_etl.raw_sources.fetch_remote_bulk_manifest", fake_manifest), patch("metabolic_safety_etl.raw_sources.download_url", fake_download):
+                summary = write_remote_raw_source_facts_json(["openfda_label"], out_path, summary_out=summary_path, temp_dir=root / "stream")
+
+            rows = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["openfda_label"]["downloaded_parts"], 1)
+            self.assertTrue(any(row["fact_type"] == "drug_effect" for row in rows))
+            self.assertEqual(json.loads(summary_path.read_text(encoding="utf-8"))["openfda_label"]["facts"], len(rows))
 
 if __name__ == "__main__":
     unittest.main()

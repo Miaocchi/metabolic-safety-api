@@ -14,7 +14,7 @@ from .adapters.rxnav import fetch_rxnav_facts
 from .export import write_json, write_mobile_seed_files, write_sqlite
 from .fusion import build_dataset, load_facts
 from .io import read_json
-from .raw_sources import fetch_remote_bulk_manifests, load_raw_source_facts, load_remote_raw_source_facts, mirror_remote_raw_sources
+from .raw_sources import fetch_remote_bulk_manifests, load_raw_source_facts, load_remote_raw_source_facts, mirror_remote_raw_sources, write_remote_raw_source_facts_json
 from .public_enrichment import (
     candidate_terms_from_dataset,
     dedupe_facts,
@@ -161,18 +161,17 @@ def cmd_remote_manifests(args: argparse.Namespace) -> int:
 
 def cmd_build_remote_source_facts(args: argparse.Namespace) -> int:
     source_keys = [item.strip() for item in args.sources.split(",") if item.strip()]
-    facts, summary = load_remote_raw_source_facts(
+    out = Path(args.out)
+    summary = write_remote_raw_source_facts_json(
         source_keys,
+        out,
+        summary_out=Path(args.summary_out) if args.summary_out else None,
         temp_dir=Path(args.temp_dir) if args.temp_dir else None,
         max_records_per_source=args.raw_max_records or 0,
         max_parts_per_source=args.raw_stream_max_parts,
-        workers=args.workers,
     )
-    out = Path(args.out)
-    write_json(out, [fact.to_dict() for fact in facts])
-    if args.summary_out:
-        write_json(Path(args.summary_out), summary)
-    print(f"remote_source_facts={len(facts)}")
+    total = sum(int(row.get("facts") or 0) for row in summary.values())
+    print(f"remote_source_facts={total}")
     print(f"remote_source_summary={summary}")
     print(f"out={out.resolve()}")
     return 0

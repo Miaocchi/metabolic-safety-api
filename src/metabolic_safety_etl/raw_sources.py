@@ -24,7 +24,7 @@ from .schemas import EvidenceFact, now_utc, slugify, stable_hash
 
 OPENFDA_SECTIONS = ("pharmacokinetics", "clinical_pharmacology", "drug_interactions", "overdosage", "warnings", "boxed_warning")
 OPENFDA_DOSE_SECTIONS = ("dosage_and_administration", "dosage_forms_and_strengths", "overdosage")
-OPENFDA_EFFECT_SECTIONS = ("indications_and_usage", "purpose", "mechanism_of_action", "pharmacodynamics")
+OPENFDA_EFFECT_SECTIONS = ("mechanism_of_action", "pharmacodynamics")
 DAILYMED_SECTION_HINTS = ("PHARMACOKINETICS", "CLINICAL PHARMACOLOGY", "DRUG INTERACTIONS", "OVERDOSAGE", "WARNINGS", "BOXED WARNING")
 DAILYMED_DOSE_SECTION_HINTS = ("DOSAGE AND ADMINISTRATION", "DOSAGE FORMS AND STRENGTHS", "OVERDOSAGE")
 DAILYMED_EFFECT_SECTION_HINTS = ("INDICATIONS AND USAGE", "PURPOSE", "MECHANISM OF ACTION", "PHARMACODYNAMICS")
@@ -1007,6 +1007,114 @@ def stream_remote_source(key: str, work_dir: Path, max_records: int = 100_000, m
     }
     return dedupe_fact_objects(facts), info
 
+
+def write_remote_raw_source_facts_json(
+    source_keys: Iterable[str],
+    out_path: Path,
+    summary_out: Path | None = None,
+    temp_dir: Path | None = None,
+    max_records_per_source: int = 100_000,
+    max_parts_per_source: int = 0,
+) -> dict[str, dict[str, Any]]:
+    """Stream remote source facts directly to a JSON array without retaining all rows."""
+    requested = [key.strip() for key in source_keys if key and key.strip()]
+    if not requested:
+        requested = list(REMOTE_RAW_SOURCE_KEYS)
+    root = Path(temp_dir) if temp_dir else Path(tempfile.mkdtemp(prefix="metabolic_raw_stream_"))
+    root.mkdir(parents=True, exist_ok=True)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    summary: dict[str, dict[str, Any]] = {}
+    seen_ids: set[str] = set()
+    first = True
+    try:
+        with out_path.open("w", encoding="utf-8") as handle:
+            handle.write("[\n")
+            for key in requested:
+                if key not in REMOTE_RAW_SOURCE_KEYS:
+                    summary[key] = {"facts": 0, "status": "unsupported"}
+                    continue
+                source_count, info = stream_remote_source_to_json(
+                    key,
+                    root / key,
+                    handle,
+                    seen_ids,
+                    first,
+                    max_records_per_source,
+                    max_parts_per_source,
+                )
+                first = info.pop("first_after", first)
+                summary[key] = info | {"facts": source_count, "status": "loaded" if source_count else "no_facts"}
+            handle.write("\n]\n")
+    finally:
+        if temp_dir is None:
+            shutil.rmtree(root, ignore_errors=True)
+    summary = dict(sorted(summary.items()))
+    if summary_out:
+        Path(summary_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(summary_out).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def stream_remote_source_to_json(
+    key: str,
+    work_dir: Path,
+    handle,
+    seen_ids: set[str],
+    first: bool,
+    max_records: int = 100_000,
+    max_parts: int = 0,
+) -> tuple[int, dict[str, Any]]:
+    manifest = fetch_remote_bulk_manifest(key)
+    parts = manifest.get("parts") or []
+    if max_parts:
+        parts = parts[:max_parts]
+    written = 0
+    downloaded = 0
+    errors = 0
+    for index, part in enumerate(parts, start=1):
+        url = part.get("url")
+        if not url:
+            errors += 1
+            continue
+        part_dir = work_dir / f"part_{index:04d}"
+        shutil.rmtree(part_dir, ignore_errors=True)
+        part_dir.mkdir(parents=True, exist_ok=True)
+        target = part_dir / safe_filename(part.get("name") or url)
+        try:
+            print(f"remote_raw_download={key} part={index}/{len(parts)} name={target.name}", flush=True)
+            download_url(url, target)
+            downloaded += 1
+            remaining = 0 if not max_records else max(max_records - written, 1)
+            for fact in load_downloaded_part_facts(key, part_dir, remaining):
+                if fact.fact_id in seen_ids:
+                    continue
+                seen_ids.add(fact.fact_id)
+                if not first:
+                    handle.write(",\n")
+                json.dump(fact.to_dict(), handle, ensure_ascii=False, sort_keys=True)
+                first = False
+                written += 1
+                if max_records and written >= max_records:
+                    break
+            print(f"remote_raw_progress={key} part={index}/{len(parts)} facts={written}", flush=True)
+            if max_records and written >= max_records:
+                break
+        except Exception as exc:
+            errors += 1
+            print(f"remote_raw_error={key} part={index} error={type(exc).__name__}: {exc}", flush=True)
+        finally:
+            shutil.rmtree(part_dir, ignore_errors=True)
+    info = {
+        "remote_parts": len(parts),
+        "downloaded_parts": downloaded,
+        "errors": errors,
+        "source_url": manifest.get("source_url"),
+        "total_records": manifest.get("total_records"),
+        "total_size_mb": manifest.get("total_size_mb"),
+        "first_after": first,
+    }
+    return written, info
 
 def load_downloaded_part_facts(key: str, part_dir: Path, max_records: int = 100_000) -> list[EvidenceFact]:
     if key == "openfda_label":
