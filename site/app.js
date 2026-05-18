@@ -72,26 +72,37 @@ function apiCacheKey() {
 function apiUrl(path, options = {}) {
   const cleanPath = String(path || "").replace(/^\/?api\//, "").replace(/^\//, "");
   const url = new URL(`api/${cleanPath}`, window.location.href);
-  if (options.versioned !== false && cleanPath !== "manifest.json") {
+  if (options.fresh) {
+    url.searchParams.set("_ts", String(Date.now()));
+  } else if (options.versioned !== false && cleanPath !== "manifest.json") {
     url.searchParams.set("_v", apiCacheKey());
   }
   return url.toString();
 }
 
-async function fetchJson(path) {
+async function fetchJson(path, options = {}) {
   const cleanPath = String(path || "").replace(/^\/?api\//, "").replace(/^\//, "");
   const isManifest = cleanPath === "manifest.json";
-  const response = await fetch(apiUrl(path, { versioned: !isManifest }), { cache: isManifest ? "no-store" : "no-cache" });
+  const fresh = Boolean(options.fresh || isManifest);
+  const response = await fetch(apiUrl(path, { versioned: !isManifest, fresh }), { cache: fresh ? "no-store" : "no-cache" });
   if (!response.ok) throw new Error(`${ui.fetchFailed}: ${path} HTTP ${response.status}`);
   return response.json();
 }
 
-async function safeFetch(path) {
+async function safeFetch(path, options = {}) {
   if (!path) return [];
+  const expectedCount = Number(options.expectedCount || 0);
   try {
-    const payload = await fetchJson(path);
-    return Array.isArray(payload) ? payload : payload ? [payload] : [];
+    const payload = await fetchJson(path, options);
+    const rows = Array.isArray(payload) ? payload : payload ? [payload] : [];
+    if (expectedCount > 0 && rows.length === 0 && !options.fresh) {
+      return safeFetch(path, { ...options, fresh: true, expectedCount: 0 });
+    }
+    return rows;
   } catch {
+    if (expectedCount > 0 && !options.fresh) {
+      return safeFetch(path, { ...options, fresh: true, expectedCount: 0 });
+    }
     return [];
   }
 }
@@ -258,12 +269,13 @@ async function selectItem(item) {
   $("detail").textContent = ui.loading;
   const paths = item.paths || {};
   try {
-    const [detail, interactions, doseRules, doseCandidates, overdoseWarnings] = await Promise.all([
-      fetchJson(paths.substance),
-      safeFetch(paths.interactions),
-      safeFetch(paths.dose_rules),
-      safeFetch(paths.dose_candidates),
-      safeFetch(paths.overdose_warnings),
+    const detail = await fetchJson(paths.substance);
+    const detailPaths = { ...paths, ...(detail.paths || {}) };
+    const [interactions, doseRules, doseCandidates, overdoseWarnings] = await Promise.all([
+      safeFetch(detailPaths.interactions, { expectedCount: detail.interaction_count || 0 }),
+      safeFetch(detailPaths.dose_rules, { expectedCount: detail.dose_rule_count || 0 }),
+      safeFetch(detailPaths.dose_candidates, { expectedCount: detail.dose_candidate_count || 0 }),
+      safeFetch(detailPaths.overdose_warnings, { expectedCount: detail.overdose_warning_count || 0 }),
     ]);
     renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings);
     const params = new URLSearchParams(window.location.search);
