@@ -189,6 +189,8 @@ jobs:
         with:
           path: .cache/metabolic-source-facts/openfda_label
           key: metabolic-source-facts-${{ runner.os }}-openfda_label-${{ steps.manifests.outputs.openfda_label }}-${{ hashFiles('src/metabolic_safety_etl/**/*.py', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          restore-keys: |
+            metabolic-source-facts-${{ runner.os }}-openfda_label-
           fail-on-cache-miss: true
 
       - name: Restore DailyMed source layer
@@ -196,6 +198,8 @@ jobs:
         with:
           path: .cache/metabolic-source-facts/dailymed
           key: metabolic-source-facts-${{ runner.os }}-dailymed-${{ steps.manifests.outputs.dailymed }}-${{ hashFiles('src/metabolic_safety_etl/**/*.py', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          restore-keys: |
+            metabolic-source-facts-${{ runner.os }}-dailymed-
           fail-on-cache-miss: true
 
       - name: Restore ChEMBL source layer
@@ -203,6 +207,8 @@ jobs:
         with:
           path: .cache/metabolic-source-facts/chembl
           key: metabolic-source-facts-${{ runner.os }}-chembl-${{ steps.manifests.outputs.chembl }}-${{ hashFiles('src/metabolic_safety_etl/**/*.py', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          restore-keys: |
+            metabolic-source-facts-${{ runner.os }}-chembl-
           fail-on-cache-miss: true
 
       - name: Restore FooDrugs source layer
@@ -210,6 +216,8 @@ jobs:
         with:
           path: .cache/metabolic-source-facts/foodrugs
           key: metabolic-source-facts-${{ runner.os }}-foodrugs-${{ steps.manifests.outputs.foodrugs }}-${{ hashFiles('src/metabolic_safety_etl/**/*.py', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          restore-keys: |
+            metabolic-source-facts-${{ runner.os }}-foodrugs-
           fail-on-cache-miss: true
 
       - name: Restore OnSIDES source layer
@@ -217,6 +225,8 @@ jobs:
         with:
           path: .cache/metabolic-source-facts/onsides
           key: metabolic-source-facts-${{ runner.os }}-onsides-${{ steps.manifests.outputs.onsides }}-${{ hashFiles('src/metabolic_safety_etl/**/*.py', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          restore-keys: |
+            metabolic-source-facts-${{ runner.os }}-onsides-
           fail-on-cache-miss: true
 
       - name: Restore PharmGKB source layer
@@ -224,6 +234,8 @@ jobs:
         with:
           path: .cache/metabolic-source-facts/pharmgkb
           key: metabolic-source-facts-${{ runner.os }}-pharmgkb-${{ steps.manifests.outputs.pharmgkb }}-${{ hashFiles('src/metabolic_safety_etl/**/*.py', 'pyproject.toml') }}-records-${{ env.RAW_MAX_RECORDS }}-parts-${{ env.RAW_STREAM_MAX_PARTS }}
+          restore-keys: |
+            metabolic-source-facts-${{ runner.os }}-pharmgkb-
           fail-on-cache-miss: true
 
       - name: Verify all structured source layers are present
