@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>代谢安全数据 API</title>
   <meta name="description" content="融合本地结构化药物、药效、PK、相互作用、剂量候选和过量警告的静态查询页。">
-  <link rel="stylesheet" href="styles.css?v=20260518-shards1">
+  <link rel="stylesheet" href="styles.css?v=20260520-overlays1">
 </head>
 <body>
   <header class="app-shell header-band">
@@ -21,8 +21,16 @@
       <a href="api/sources/index.json">来源</a>
       <a href="api/drug-effects/manifest.json">药效</a>
       <a href="api/pharmacokinetics/manifest.json">PK</a>
+      <a href="api/enzyme-relations/manifest.json">酶关系</a>
+      <a href="api/pgx/manifest.json">PGx</a>
+      <a href="api/dose-rules/manifest.json">剂量规则</a>
       <a href="api/dose-candidates/manifest.json">剂量候选</a>
       <a href="api/overdose-warnings/manifest.json">过量警告</a>
+      <a href="api/label-sections/manifest.json">标签摘录</a>
+      <a href="api/safety-warnings/manifest.json">安全警告</a>
+      <a href="api/interaction-signals/manifest.json">相互作用信号</a>
+      <a href="api/food-interactions/manifest.json">食物相互作用</a>
+      <a href="api/adverse-signals/manifest.json">不良事件信号</a>
       <a href="api/search/manifest.json">搜索分片</a>
       <a href="api/packages/full/manifest.json">全量包</a>
     </nav>
@@ -45,7 +53,7 @@
       <div><span>相互作用</span><strong id="interactionCount">0</strong></div>
       <div><span>剂量规则</span><strong id="doseCount">0</strong></div>
       <div><span>剂量候选</span><strong id="candidateCount">0</strong></div>
-      <div><span>过量警告</span><strong id="overdoseCount">0</strong></div>
+      <div><span>安全/信号/PGx</span><strong id="overlayCount">0</strong></div>
       <div><span>数据来源</span><strong id="sourceCount">0</strong></div>
     </section>
 
@@ -63,7 +71,7 @@
           <h2>详情</h2>
           <span id="detailBadge">未选择</span>
         </div>
-        <article id="detail" class="detail-card empty">请选择药物查看药效/机制、PK 线索、CYP 关系、相互作用、剂量候选和过量警告。</article>
+        <article id="detail" class="detail-card empty">请选择药物查看药效/机制、PK 线索、CYP 关系、相互作用、剂量候选、过量警告、标签/安全/食物/不良事件/PGx overlay。</article>
       </div>
     </section>
   </main>
@@ -72,6 +80,6 @@
     <p>说明：本页是 GitHub Pages 静态 JSON API 的在线检索层。搜索页默认只读取元数据和索引分片，不在打开页面时解析全量搜索索引。</p>
   </footer>
 
-  <script src="app.js?v=20260520-pk1" defer></script>
+  <script src="app.js?v=20260520-overlays1" defer></script>
 </body>
 </html>

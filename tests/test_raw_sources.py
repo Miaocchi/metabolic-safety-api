@@ -7,7 +7,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from metabolic_safety_etl.raw_sources import dailymed_xml_facts, extract_half_life_hours, load_chembl_bulk_facts, load_dailymed_bulk_facts, load_foodrugs_bulk_facts, load_onsides_bulk_facts, load_openfda_bulk_facts, load_remote_raw_source_facts, write_remote_raw_source_facts_json, _chembl_pk_to_hours
+from metabolic_safety_etl.raw_sources import dailymed_xml_facts, extract_half_life_hours, load_chembl_bulk_facts, load_dailymed_bulk_facts, load_foodrugs_bulk_facts, load_onsides_bulk_facts, load_openfda_bulk_facts, load_pharmgkb_bulk_facts, load_remote_raw_source_facts, write_remote_raw_source_facts_json, _chembl_pk_to_hours
 
 
 class RawSourceAdapterTests(unittest.TestCase):
@@ -45,6 +45,30 @@ class RawSourceAdapterTests(unittest.TestCase):
             self.assertTrue(any(f.fact_type == "drug_effect" and "norepinephrine" in str(f.claim) for f in facts))
             self.assertTrue(any(f.fact_type == "dose_candidate" and f.claim["candidate_kind"] == "max_daily_candidate" for f in facts))
             self.assertTrue(any(f.fact_type == "overdose_warning" for f in facts))
+            self.assertTrue(any(f.fact_type == "label_section" for f in facts))
+
+    def test_openfda_bulk_extracts_label_warning_and_interaction_signal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "openfda_label"
+            source.mkdir()
+            payload = {
+                "results": [
+                    {
+                        "set_id": "set-warning",
+                        "openfda": {"generic_name": ["Warning Drug"]},
+                        "warnings": ["Severe respiratory depression has been reported."],
+                        "drug_interactions": ["Avoid concomitant use with strong CYP3A4 inhibitors."],
+                    }
+                ]
+            }
+            with zipfile.ZipFile(source / "labels.zip", "w") as archive:
+                archive.writestr("drug-label-0001.json", json.dumps(payload))
+
+            facts = load_openfda_bulk_facts(source)
+
+            self.assertTrue(any(f.fact_type == "safety_warning" and f.risk_level == "Major" for f in facts))
+            self.assertTrue(any(f.fact_type == "interaction_signal" and f.risk_level == "Major" for f in facts))
 
     def test_dailymed_xml_extracts_identity_pk_and_cyp(self):
         xml = b'''
@@ -68,6 +92,7 @@ class RawSourceAdapterTests(unittest.TestCase):
         self.assertEqual(pk.claim["half_life_hours"], 0.5)
         self.assertTrue(any(f.fact_type == "enzyme_relation" and f.claim["tag"] == "CYP2D6_inhibitor" for f in facts))
         self.assertTrue(any(f.fact_type == "drug_effect" and "antagonizes" in str(f.claim) for f in facts))
+        self.assertTrue(any(f.fact_type == "label_section" and f.claim["section"] == "pk" for f in facts))
 
 
     def test_dailymed_bulk_reads_nested_zip_xml(self):
@@ -226,6 +251,55 @@ class RawSourceAdapterTests(unittest.TestCase):
             self.assertEqual(len(pairs), 2)
             self.assertTrue(any(f.subject_ids == ["simvastatin", "grapefruit"] for f in pairs))
             self.assertTrue(all(f.extraction_method == "bulk_mysql_dump" for f in pairs))
+
+    def test_pharmgkb_bulk_extracts_pgx_relationships_labels_and_guidelines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "pharmgkb"
+            source.mkdir()
+            with zipfile.ZipFile(source / "clinicalAnnotations.zip", "w") as archive:
+                archive.writestr(
+                    "clinical_annotations.tsv",
+                    "Clinical Annotation ID\tDrug(s)\tGene\tVariant/Haplotypes\tLevel of Evidence\tPhenotype Category\tPhenotype(s)\tScore\tPMID Count\tURL\n"
+                    "CA1\tWarfarin\tCYP2C9\t*2\t1A\tDosage\tDose requirement\t5\t3\thttps://example.test/ca1\n",
+                )
+            with zipfile.ZipFile(source / "drugLabels.zip", "w") as archive:
+                archive.writestr(
+                    "drugLabels.tsv",
+                    "PharmGKB ID\tName\tSource\tTesting Level\tHas Prescribing Info\tHas Dosing Info\tHas Alternate Drug\tGenes\tVariants/Haplotypes\tChemicals\n"
+                    "DL1\tWarfarin label\tFDA\tTesting required\tYes\tYes\tNo\tCYP2C9;VKORC1\t*2\tWarfarin\n",
+                )
+            with zipfile.ZipFile(source / "relationships.zip", "w") as archive:
+                archive.writestr(
+                    "relationships.tsv",
+                    "Entity1_name\tEntity1_type\tEntity2_name\tEntity2_type\tAssociation\tEvidence\tPK\tPD\tPMIDs\n"
+                    "Warfarin\tChemical\tCYP2C9\tGene\tassociated\tGuideline evidence\tY\tN\t12345;67890\n",
+                )
+            guideline = {
+                "guideline": {
+                    "id": "G1",
+                    "name": "Warfarin dosing guideline",
+                    "source": "CPIC",
+                    "relatedChemicals": [{"name": "Warfarin"}],
+                    "relatedGenes": [{"symbol": "CYP2C9"}, {"symbol": "VKORC1"}],
+                    "dosingInformation": True,
+                    "hasTestingInfo": True,
+                    "summaryMarkdown": {"html": "Warfarin PGx summary"},
+                }
+            }
+            with zipfile.ZipFile(source / "guidelineAnnotations.json.zip", "w") as archive:
+                archive.writestr("guideline.json", json.dumps(guideline))
+
+            facts = load_pharmgkb_bulk_facts(source)
+
+            types = {f.fact_type for f in facts}
+            self.assertIn("pgx_clinical_annotation", types)
+            self.assertIn("pgx_drug_label", types)
+            self.assertIn("pgx_relationship", types)
+            self.assertIn("pgx_guideline", types)
+            self.assertTrue(all(f.source_tier == "Guideline" for f in facts))
+            guideline_fact = next(f for f in facts if f.fact_type == "pgx_guideline")
+            self.assertEqual(guideline_fact.claim["genes"], ["CYP2C9", "VKORC1"])
 
 
 class HalfLifeExtractionTests(unittest.TestCase):

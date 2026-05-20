@@ -166,4 +166,23 @@ export const SAFETY_NOTES = {
   localModelOnly: "移动端模型用于趋势估算，不是临床剂量建议。",
   doseNormalization: "自动归一化剂量规则需要结合人群、途径、适应症和制剂复核。",
   notClinicalDecision: "这是个人日志和趋势估算，不是临床决策支持。",
+  /** Label sections are evidence text excerpts, not clinical instructions. */
+  labelTextEvidence: "标签文段为证据摘录，不是临床用药指导。",
+  /** Safety warnings are machine-extracted; must not override higher-trust curated rules. */
+  safetyWarningExtraction: "安全警告为机器提取标签文段，不能替代更高层级的人工审核规则。",
+  /** Interaction signals are label-derived, do not replace DDInter risk rules. */
+  interactionSignalReview: "交互信号来源于标签摘录，需人工复核，不能替代 DDInter 风险规则。",
+  /**
+   * FooDrugs food interactions are text-mined, low-confidence, non-causal.
+   * Must NOT downgrade regulatory or curated evidence.
+   */
+  foodInteractionCandidate: "FooDrugs 食物/生物活性物候选信号为低置信度文本挖掘，不代表因果关系，不能替代监管或人工审核证据。",
+  /**
+   * OnSIDES adverse signals are label-derived, not incidence or causality.
+   */
+  adverseSignalNotIncidence: "OnSIDES 不良信号来源于标签文本挖掘，不代表发生率或因果关系，仅作低置信度复核参考。",
+  /**
+   * PGx rows are evidence-only; not individualized prescribing recommendations.
+   */
+  pgxEvidenceOnly: "PGx 行为 PharmGKB/ClinPGx 证据展示，不是个体化处方建议。Unknown ≠ 安全。",
 } as const;

@@ -93,7 +93,7 @@ input[type="search"]:focus { border-color: var(--green); }
 .section-title span { color: var(--muted); font-size: 13px; }
 .result-list, .detail-card { min-height: 220px; }
 .empty { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 8px; padding: 16px; }
-.result-card, .detail-card, .interaction-card, .dose-card, .source-card, .effect-card, .pk-card { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 14px; min-width: 0; overflow: hidden; }
+.result-card, .detail-card, .interaction-card, .dose-card, .source-card, .effect-card, .pk-card, .overlay-card { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 14px; min-width: 0; overflow: hidden; }
 .result-list:not(.empty) { display: grid; gap: 10px; }
 .result-card { width: 100%; text-align: left; }
 .result-card:hover, .result-card.active { border-color: var(--green); }
@@ -116,9 +116,12 @@ input[type="search"]:focus { border-color: var(--green); }
 .kv-grid strong { display: block; margin-top: 4px; }
 .subsection h4 { margin-bottom: 8px; font-size: 15px; }
 .stack { display: grid; gap: 8px; }
-.interaction-card, .dose-card, .source-card, .effect-card, .pk-card { background: var(--panel-3); }
+.interaction-card, .dose-card, .source-card, .effect-card, .pk-card, .overlay-card { background: var(--panel-3); }
 .effect-card { border-color: rgba(56, 189, 248, 0.42); }
 .pk-card { border-color: rgba(0, 230, 118, 0.32); }
+.overlay-card { border-color: rgba(251, 191, 36, 0.32); }
+.overlay-card.pgx { border-color: rgba(56, 189, 248, 0.45); }
+.overlay-note { color: var(--amber); }
 .effect-text { color: var(--text); }
 .card-meta a { color: var(--blue); text-decoration: none; }
 .card-meta a:hover { text-decoration: underline; }

@@ -56,6 +56,12 @@ function makeBundles(overrides: Record<string, Partial<SubstanceBundle>> = {}): 
       drugEffects: [],
       pharmacokinetics: [],
       enzymeRelations: [],
+      labelSections: [],
+      safetyWarnings: [],
+      interactionSignals: [],
+      foodInteractions: [],
+      adverseSignals: [],
+      pgx: [],
       fetchedAt: now,
     },
   };

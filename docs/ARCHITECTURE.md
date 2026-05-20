@@ -21,7 +21,41 @@ build/                      Generated local seed JSON/SQLite outputs
 public/api/                 Generated static JSON API for remote/bundled client use
 ```
 
-Generated outputs (`build/`, `public/api/`) are products of ETL commands and should not be hand-edited except for an explicit artifact hotfix.
+### Authoritative directory table
+
+| Directory / File | Source or Generated | Committed | Purpose |
+| --- | --- | --- | --- |
+| `src/metabolic_safety_etl/` | Source | Yes | Python ETL package: adapters, schema, fusion, CLI, static API export |
+| `tests/` | Source | Yes | Python unit tests for ETL, fusion, static API |
+| `desktop_app/` | Source | Yes | Stdlib localhost HTTP server (`server.py`) and full desktop frontend (`static/`); reads `build/` for seed data |
+| `desktop_app/static/` | Source | Yes | Vanilla JS desktop frontend (journal, risk panels, substance search, PK curves); served by `server.py` on localhost:8765 |
+| `mobile_pwa/` | Source | Yes | React 19 + Vite 7 + TypeScript PWA client; has its own `package.json` and lockfile |
+| `mobile_pwa/dist/` | Generated | No (gitignored) | PWA build output consumed by Capacitor `webDir` |
+| `mobile_pwa/public/` | Source | Yes | PWA static assets (icon, manifest, service worker); copied into `dist/` during build |
+| `mobile_pwa/node_modules/` | Generated | No (gitignored) | npm dependencies for PWA |
+| `android/` | Source | Yes | Capacitor Android wrapper; Gradle project wrapping `mobile_pwa/dist` |
+| `android/app/src/main/java/com/metabolicsafety/app/` | Source | Yes | Android `MainActivity` (Capacitor bridge entry) |
+| `android/app/src/test/` | Source | Yes | Local JVM unit tests for Android wrapper |
+| `android/app/src/androidTest/` | Source | Yes | Instrumented tests for Android wrapper |
+| `docs/` | Source | Yes | Architecture, deployment, and data source documentation |
+| `data/raw/` | External input | Partially (`.gitignore` excludes large downloads) | Raw upstream source data: DDInter CSV, openFDA, DailyMed, ChEMBL, etc. |
+| `data/optional/` | Generated/cache | Partially | Optional public-source fact caches (`public_facts.json`) |
+| `build/` | Generated | No (gitignored) | Local ETL outputs: `init_substances.json`, `init_interactions.json`, `evidence_facts.json`, `manifest.json`, `app_seed.sqlite` |
+| `build_ddinter/` | Generated | No (gitignored) | Intermediate DDInter import artifacts |
+| `public/api/` | Generated | No (gitignored; CI rebuilds) | Static JSON API shards for GitHub Pages / Cloudflare Pages |
+| `site/` | Source | Yes | Vanilla JS search/viewer UI for GitHub Pages / Cloudflare Pages; CI copies into `public/` root during deploy |
+| `tools/` | Source | Yes | Auxiliary scripts and tooling |
+| `pyproject.toml` | Source | Yes | Python project metadata; exposes `metabolic-etl` CLI entrypoint |
+| `capacitor.config.json` | Source | Yes | Capacitor config; `appId=com.metabolicsafety.app`, `webDir=mobile_pwa/dist` |
+| `package.json` | Source | Yes | Monorepo root scripts and Capacitor CLI dependencies |
+| `package-lock.json` | Generated | Yes | Root npm lockfile for Capacitor dependencies |
+| `node_modules/` | Generated | No (gitignored) | Root-level npm dependencies |
+| `agent.md` | Source | Yes | Agent instructions, repo map, command reference, safety rules |
+| `README.md` | Source | Yes | Project overview, quickstart, and feature documentation |
+| `.github/workflows/` | Source | Yes | CI: data API build, Cloudflare Pages deploy, UI hotfix deploy |
+| `.gitignore` | Source | Yes | Git ignore rules for generated outputs and large data |
+
+Generated outputs (`build/`, `public/api/`, `mobile_pwa/dist/`) are products of ETL commands or CI builds and should not be hand-edited except for an explicit artifact hotfix. `site/` and `desktop_app/static/` are tracked source code — vanilla JS apps for different deployment targets.
 
 ## Data and evidence architecture
 
@@ -56,7 +90,7 @@ Important fields in an evidence record include `fact_type`, `subject_ids`, `clai
 
 ## Mobile PWA architecture
 
-Current implementation uses dedicated pages, repositories, services, domain helpers, legacy `lib` utilities, and `App.tsx` as the top-level shell. Keep new work within these boundaries without large opportunistic rewrites.
+Current implementation uses dedicated pages, repositories, services, domain helpers, compatibility `lib` bridges, and `App.tsx` as the top-level shell. Keep new work within these boundaries without large opportunistic rewrites.
 
 | Layer | Current location | Target responsibility |
 | --- | --- | --- |
@@ -66,17 +100,18 @@ Current implementation uses dedicated pages, repositories, services, domain help
 | `hooks` | `src/hooks/usePlatform.ts` | UI/device state, media queries, haptics, and later page-specific view hooks |
 | `repositories` | `src/repositories/` plus low-level `src/lib/api.ts`/`src/lib/db.ts` | Persistence and data access interfaces: static API, desktop local API, IndexedDB cache/journal/settings |
 | `services` | `src/services/` | Application use cases: sync static DB, hydrate cache, remote fallback, import transfer, risk evaluation |
-| `domain` | `src/domain/`, `src/types.ts`, pure `src/lib/format.ts` pieces | Shared domain types, safety/risk rules, route/stomach/profile vocabulary, invariants |
+| `domain` | `src/domain/`, `src/types.ts` | Shared domain types, safety/risk rules, risk computation, PK modeling, formatting/search helpers, route/stomach/profile vocabulary, invariants |
 | `viewmodels` | `App.tsx` and page-local state/effects | Screen state derivation and commands; bridge pages to services/repositories |
 | `data` | `src/lib/db.ts`, static JSON payloads, IndexedDB stores | Local data schemas, DTOs, cache records, generated static API payload contracts |
 
 Recommended boundaries:
 
-- `domain` and pure risk/PK logic (`lib/risks.ts`, `lib/pk.ts`) should remain testable without React or browser storage.
+- `domain` and pure risk/PK/format logic (`domain/risk-computation.ts`, `domain/pk.ts`, `domain/format.ts`) should remain testable without React or browser storage.
 - `repositories` should own IO details (`fetch`, IndexedDB object stores, local desktop API paths). UI code should not construct all URLs or IndexedDB transactions directly.
 - `services` should combine repositories into workflows such as “search remote then cache bundle” or “load local seed into cache”.
 - `viewmodels` should prepare localized labels and command handlers for `pages`; reusable `components` should stay presentation-oriented.
 - Remote static API fallback must not receive journal/profile data.
+- `src/lib/format.ts`, `src/lib/pk.ts`, and `src/lib/risks.ts` are deprecated re-export bridges for legacy imports; new code should import from `src/domain/*`. `src/lib/api.ts` and `src/lib/db.ts` remain low-level IO until their consumers fully move behind repositories/services.
 
 ## Desktop server architecture
 
@@ -111,11 +146,26 @@ Migration order should be route-addition friendly: extract a route group only wh
 - `fusion.py` applies conservative evidence/risk merge rules and produces core seed structures.
 - `export.py` writes local JSON/SQLite outputs under `build/`.
 - `static_api.py` shards and exports the static JSON API under `public/api/`.
-- `cli.py` is the command entrypoint; `pyproject.toml` also exposes `metabolic-etl` when installed editable.
+- `cli.py` is the stable command entrypoint; command implementations are split by responsibility under `cli_modules/` (`commands_build.py`, `commands_fetch.py`, `commands_api.py`, `commands_sources.py`, `helpers.py`). `pyproject.toml` also exposes `metabolic-etl` when installed editable.
 
 ## Development commands
 
 Run Python commands from repo root. On Windows PowerShell use `$env:PYTHONPATH="src"`; on POSIX shells use `PYTHONPATH=src` before the command.
+
+Root `package.json` also provides delegating scripts for common workflows:
+
+```powershell
+npm run mobile:dev
+npm run mobile:build
+npm run mobile:test
+npm run data:demo
+npm run data:test
+npm run data:export-static-api
+npm run android:sync
+npm run android:open
+```
+
+The root `data:*` npm scripts use `tools/npm_python_runner.js` to try `python3`/`python` on POSIX and `py -3`/`python`/`python3` on Windows, then inject `src` into Python's import path. You can still use the explicit Python commands below or install the package editable.
 
 ### Data build and ETL
 

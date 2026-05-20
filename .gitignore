@@ -1,34 +1,73 @@
-# Python / JS caches
+# ──────────────────────────────────────────────────────────────
+# Python caches and build artifacts
+# ──────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
 .pytest_cache/
+*.egg-info/
+*.egg
+
+# ──────────────────────────────────────────────────────────────
+# Node / JS caches (root + mobile_pwa)
+# ──────────────────────────────────────────────────────────────
 node_modules/
+*.tsbuildinfo
+
+# ──────────────────────────────────────────────────────────────
+# mobile_pwa build output and test artifacts
+#   src/        → TypeScript source (tracked)
+#   dist/       → Vite build output (rebuild: npm run build)
+#   coverage/   → test coverage reports
+#   previews/   → visual preview screenshots
+# ──────────────────────────────────────────────────────────────
 mobile_pwa/dist/
 mobile_pwa/coverage/
 mobile_pwa/previews/
 mobile_pwa/*-smoke.png
-*.tsbuildinfo
-*.pid
 
-# Local generated databases and logs
+# ──────────────────────────────────────────────────────────────
+# ETL build output (regenerable via CLI)
+#   build/           → python -m metabolic_safety_etl.cli demo --out build
+#   build_ddinter/   → python -m metabolic_safety_etl.cli import-ddinter ...
+#   *.sqlite*        → generated seed databases
+#   *.log / *.pid    → process logs and PID files from parallel ETL runs
+# ──────────────────────────────────────────────────────────────
 build/
 build_ddinter/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.log
+*.pid
 
+# ──────────────────────────────────────────────────────────────
+# CI source-layer cache (GitHub Actions only; never commit)
+# ──────────────────────────────────────────────────────────────
+.cache/
+
+# ──────────────────────────────────────────────────────────────
 # Large raw downloads kept off GitHub
+#   Each source is ~100-800 MB; re-download via ETL or manually.
+#   *.part = incomplete download artifacts
+# ──────────────────────────────────────────────────────────────
 /data/raw/openfda_label/
 /data/raw/dailymed_spl/
 /data/raw/chembl/
 /data/raw/foodrugs/
 /data/raw/onsides/
 /data/raw/pharmgkb/
+*.part
 
-# Generated static export; Actions rebuilds it
+# ──────────────────────────────────────────────────────────────
+# Generated static export for GitHub Pages / Cloudflare Pages
+#   CI rebuilds this: ETL → public/api/ JSON, then copies site/ UI.
+#   Not a source directory — do not hand-edit.
+# ──────────────────────────────────────────────────────────────
 /public/
 
+# ──────────────────────────────────────────────────────────────
 # Local env/secrets
+# ──────────────────────────────────────────────────────────────
 .env
 .dev.vars

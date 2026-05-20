@@ -58,6 +58,12 @@ export interface ApiPaths {
   drug_effects?: string;
   pharmacokinetics?: string;
   enzyme_relations?: string;
+  label_sections?: string;
+  safety_warnings?: string;
+  interaction_signals?: string;
+  food_interactions?: string;
+  adverse_signals?: string;
+  pgx?: string;
 }
 
 export interface SubstanceSummary {
@@ -80,6 +86,154 @@ export interface SourceSummary {
   risk_level?: RiskLevel;
 }
 
+export interface EvidenceTextRow {
+  fact_id?: string;
+  section?: string;
+  source_key?: string;
+  source_name?: string;
+  source_tier?: string;
+  source_url?: string;
+  confidence?: string;
+  risk_level?: RiskLevel;
+  text?: string;
+  evidence?: string;
+  note?: string;
+  [key: string]: unknown;
+}
+
+export interface PharmacokineticRow extends EvidenceTextRow {
+  half_life_hours?: number | string | null;
+  half_life_hours_mean?: number | string | null;
+  half_life_hours_upper?: number | string | null;
+  onset_minutes?: number | string | null;
+  duration_minutes?: number | string | null;
+  route?: string | null;
+  standard_type?: string | null;
+}
+
+export interface SubstanceRemoteEvidence {
+  drug_effects?: EvidenceTextRow[];
+  pharmacokinetics?: PharmacokineticRow[];
+  enzyme_relations?: EvidenceTextRow[];
+  [key: string]: unknown;
+}
+
+// ── Content overlay row types ──────────────────────────────────────────
+
+/** DailyMed/openFDA label section excerpt — evidence text, not clinical instructions. */
+export interface LabelSectionRow {
+  fact_id?: string;
+  source_key?: string;
+  source_name?: string;
+  source_url?: string;
+  source_tier?: string;
+  confidence?: string;
+  section?: string;
+  text?: string;
+}
+
+/** Label-derived safety warning excerpt — machine extraction, must not override curated rules. */
+export interface SafetyWarningRow {
+  fact_id?: string;
+  source_key?: string;
+  source_name?: string;
+  source_url?: string;
+  source_tier?: string;
+  confidence?: string;
+  risk_level?: RiskLevel;
+  section?: string;
+  warning_text?: string;
+}
+
+/** Label interaction excerpt — review-required signal, does not replace DDInter risk rules. */
+export interface InteractionSignalRow {
+  fact_id?: string;
+  source_key?: string;
+  source_name?: string;
+  source_url?: string;
+  source_tier?: string;
+  confidence?: string;
+  risk_level?: RiskLevel;
+  section?: string;
+  interaction_text?: string;
+  signal_policy?: string;
+}
+
+/**
+ * FooDrugs text-mined food/bioactive-drug candidate signal.
+ *
+ * SAFETY: Low-confidence, non-causal. Must NOT downgrade regulatory or curated evidence.
+ */
+export interface FoodInteractionRow {
+  fact_id?: string;
+  source_key?: string;
+  source_name?: string;
+  source_url?: string;
+  source_tier?: string;
+  confidence?: string;
+  risk_level?: RiskLevel;
+  drug?: string;
+  drug_id?: string;
+  food_or_bioactive?: string;
+  food_or_bioactive_id?: string;
+  mechanism?: string;
+  note?: string;
+  signal_policy?: string;
+}
+
+/**
+ * OnSIDES label-derived adverse event signal.
+ *
+ * SAFETY: Not incidence rates or causal attribution — low-confidence review cues only.
+ */
+export interface AdverseSignalRow {
+  fact_id?: string;
+  source_key?: string;
+  source_name?: string;
+  source_url?: string;
+  source_tier?: string;
+  confidence?: string;
+  risk_level?: RiskLevel;
+  event?: string;
+  meddra_id?: string;
+  label_section?: string;
+  match_method?: string;
+  score?: number | string | null;
+  signal_policy?: string;
+}
+
+/**
+ * PharmGKB/ClinPGx gene-drug evidence row.
+ *
+ * SAFETY: Evidence-only. Not individualized prescribing recommendations.
+ */
+export interface PgxRow {
+  fact_id?: string;
+  fact_type?: string;
+  source_key?: string;
+  source_name?: string;
+  source_url?: string;
+  source_tier?: string;
+  confidence?: string;
+  section?: string;
+  gene?: string;
+  genes?: string[];
+  variants?: string | string[] | null;
+  phenotypes?: string | string[] | null;
+  level_of_evidence?: string;
+  testing_level?: string;
+  has_prescribing_info?: boolean;
+  has_dosing_info?: boolean;
+  association?: string;
+  related_entity?: string;
+  related_entity_type?: string;
+  guideline_id?: string;
+  name?: string;
+  summary?: string;
+  evidence?: string;
+  policy?: string;
+}
+
 export interface SubstanceDetail extends SubstanceSummary {
   dataset_version?: string;
   base_half_life?: number | string | null;
@@ -95,7 +249,16 @@ export interface SubstanceDetail extends SubstanceSummary {
   drug_effect_count?: number;
   pharmacokinetic_count?: number;
   enzyme_relation_count?: number;
+  label_section_count?: number;
+  safety_warning_count?: number;
+  interaction_signal_count?: number;
+  food_interaction_count?: number;
+  adverse_signal_count?: number;
+  pgx_count?: number;
   source_summary?: SourceSummary[];
+  pharmacokinetics?: PharmacokineticRow[];
+  pharmacokinetics_detail?: PharmacokineticRow[];
+  remote_evidence?: SubstanceRemoteEvidence;
   paths?: ApiPaths;
 }
 
@@ -143,21 +306,6 @@ export interface DoseRule {
   population?: { review_required?: boolean; age_group?: string };
 }
 
-export interface EvidenceTextRow {
-  fact_id?: string;
-  section?: string;
-  source_key?: string;
-  source_name?: string;
-  source_tier?: string;
-  source_url?: string;
-  confidence?: string;
-  risk_level?: RiskLevel;
-  text?: string;
-  evidence?: string;
-  note?: string;
-  [key: string]: unknown;
-}
-
 export interface SubstanceBundle {
   detail: SubstanceDetail;
   interactions: InteractionRow[];
@@ -165,8 +313,14 @@ export interface SubstanceBundle {
   doseCandidates: EvidenceTextRow[];
   overdoseWarnings: EvidenceTextRow[];
   drugEffects: EvidenceTextRow[];
-  pharmacokinetics: EvidenceTextRow[];
+  pharmacokinetics: PharmacokineticRow[];
   enzymeRelations: EvidenceTextRow[];
+  labelSections: LabelSectionRow[];
+  safetyWarnings: SafetyWarningRow[];
+  interactionSignals: InteractionSignalRow[];
+  foodInteractions: FoodInteractionRow[];
+  adverseSignals: AdverseSignalRow[];
+  pgx: PgxRow[];
   fetchedAt: number;
 }
 

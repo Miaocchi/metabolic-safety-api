@@ -228,6 +228,12 @@ export default function App() {
             drugEffects: [],
             pharmacokinetics: [],
             enzymeRelations: [],
+            labelSections: [],
+            safetyWarnings: [],
+            interactionSignals: [],
+            foodInteractions: [],
+            adverseSignals: [],
+            pgx: [],
             fetchedAt: Date.now(),
           });
           throw error;
@@ -440,6 +446,12 @@ export default function App() {
                     drugEffects: [],
                     pharmacokinetics: [],
                     enzymeRelations: [],
+                    labelSections: [],
+                    safetyWarnings: [],
+                    interactionSignals: [],
+                    foodInteractions: [],
+                    adverseSignals: [],
+                    pgx: [],
                     fetchedAt: Date.now(),
                   };
                 }

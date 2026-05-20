@@ -81,6 +81,12 @@ export class SubstanceService {
       drugEffects: [],
       pharmacokinetics: [],
       enzymeRelations: [],
+      labelSections: [],
+      safetyWarnings: [],
+      interactionSignals: [],
+      foodInteractions: [],
+      adverseSignals: [],
+      pgx: [],
       fetchedAt: Date.now(),
     };
   }

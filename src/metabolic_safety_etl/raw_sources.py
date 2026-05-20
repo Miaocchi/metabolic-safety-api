@@ -25,9 +25,34 @@ from .schemas import EvidenceFact, now_utc, slugify, stable_hash
 OPENFDA_SECTIONS = ("pharmacokinetics", "clinical_pharmacology", "drug_interactions", "overdosage", "warnings", "boxed_warning")
 OPENFDA_DOSE_SECTIONS = ("dosage_and_administration", "dosage_forms_and_strengths", "overdosage")
 OPENFDA_EFFECT_SECTIONS = ("mechanism_of_action", "pharmacodynamics")
+OPENFDA_LABEL_SECTION_MAP = {
+    "pharmacokinetics": "pk",
+    "clinical_pharmacology": "pk",
+    "drug_interactions": "interaction",
+    "drug_and_or_laboratory_test_interactions": "interaction",
+    "dosage_and_administration": "dosage",
+    "dosage_forms_and_strengths": "dosage",
+    "overdosage": "overdose",
+    "warnings": "warning",
+    "warnings_and_precautions": "warning",
+    "boxed_warning": "warning",
+    "contraindications": "warning",
+    "indications_and_usage": "effect",
+    "purpose": "effect",
+    "mechanism_of_action": "effect",
+    "pharmacodynamics": "effect",
+}
 DAILYMED_SECTION_HINTS = ("PHARMACOKINETICS", "CLINICAL PHARMACOLOGY", "DRUG INTERACTIONS", "OVERDOSAGE", "WARNINGS", "BOXED WARNING")
 DAILYMED_DOSE_SECTION_HINTS = ("DOSAGE AND ADMINISTRATION", "DOSAGE FORMS AND STRENGTHS", "OVERDOSAGE")
 DAILYMED_EFFECT_SECTION_HINTS = ("INDICATIONS AND USAGE", "PURPOSE", "MECHANISM OF ACTION", "PHARMACODYNAMICS")
+DAILYMED_LABEL_SECTION_HINTS = {
+    "effect": ("INDICATIONS AND USAGE", "PURPOSE", "MECHANISM OF ACTION", "PHARMACODYNAMICS"),
+    "pk": ("PHARMACOKINETICS", "CLINICAL PHARMACOLOGY"),
+    "interaction": ("DRUG INTERACTIONS", "DRUG AND OR LABORATORY TEST INTERACTIONS"),
+    "dosage": ("DOSAGE AND ADMINISTRATION", "DOSAGE FORMS AND STRENGTHS"),
+    "overdose": ("OVERDOSAGE",),
+    "warning": ("BOXED WARNING", "WARNINGS", "WARNINGS AND PRECAUTIONS", "CONTRAINDICATIONS"),
+}
 CYP_RE = re.compile(r"\bCYP(?:1A2|2A6|2B6|2C8|2C9|2C19|2D6|2E1|3A4|3A5|3A7|4A11)\b", re.I)
 HALF_LIFE_RE = re.compile(
     r"(?:half[-\s]?life|t\s*1\s*/\s*2|t1/2|terminal\s+half[-\s]?life)"
@@ -37,6 +62,7 @@ HALF_LIFE_RE = re.compile(
     r"\s*(?P<unit>hours?|hrs?|h|minutes?|mins?|days?|d)\b",
     re.I,
 )
+LABEL_RISK_RE = re.compile(r"\b(avoid|contraindicated|contraindication|fatal|death|life-threatening|serotonin syndrome|respiratory depression|qt prolong|torsades|major|severe|not recommended)\b", re.I)
 
 
 def load_raw_source_facts(raw_dir: Path, max_records_per_source: int = 100_000, max_files_per_source: int = 0, workers: int = 0) -> tuple[list[EvidenceFact], dict[str, dict[str, Any]]]:
@@ -191,6 +217,7 @@ def openfda_result_facts(result: dict[str, Any]) -> list[EvidenceFact]:
     if re.search(r"mechanism\s+of\s+action|pharmacodynamic", clinical_pharmacology, re.I):
         effect_sections.append(("clinical_pharmacology", clinical_pharmacology))
     facts.extend(drug_effect_facts(subject_id, effect_sections, "openFDA drug label bulk", url, "bulk_json"))
+    facts.extend(openfda_label_evidence_facts(subject_id, result, "openFDA drug label bulk", url, "bulk_json"))
     facts.extend(pk_and_enzyme_facts(subject_id, joined_sections(result, OPENFDA_SECTIONS), "openFDA drug label bulk", url, "bulk_json"))
     overdose_text = joined_sections(result, ("overdosage",))
     if overdose_text:
@@ -200,6 +227,72 @@ def openfda_result_facts(result: dict[str, Any]) -> list[EvidenceFact]:
         if section_text:
             facts.extend(extract_dose_candidate_facts(subject_id, section_text, "openFDA drug label bulk", url, "bulk_json", section=section))
     return facts
+
+
+def label_evidence_facts(subject_id: str, section: str, text: str, source_name: str, source_url: str, method: str, tier: str = "Regulatory") -> list[EvidenceFact]:
+    clean = squash(text)
+    if not clean:
+        return []
+    section_name = squash(section or "label") or "label"
+    facts = [EvidenceFact(
+        fact_id=f"{slugify(source_name)}_label_{stable_hash(subject_id + section_name + clean[:1000])}",
+        fact_type="label_section",
+        subject_ids=[subject_id],
+        claim={"section": section_name, "text_excerpt": clean[:3000]},
+        confidence="Medium",
+        source_tier=tier,
+        source_name=source_name,
+        source_url=source_url,
+        evidence_quote=clean[:1800],
+        extraction_method=f"{method}_label_section",
+        review_status="unreviewed",
+        use_policy="evidence_source",
+        updated_at=now_utc(),
+    )]
+    if section_name in {"warning", "boxed_warning", "contraindications"}:
+        facts.append(EvidenceFact(
+            fact_id=f"{slugify(source_name)}_safety_{stable_hash(subject_id + section_name + clean[:1000])}",
+            fact_type="safety_warning",
+            subject_ids=[subject_id],
+            claim={"section": section_name, "warning_text": clean[:2500]},
+            risk_level="Major" if LABEL_RISK_RE.search(clean) else "Moderate",
+            confidence="Medium",
+            source_tier=tier,
+            source_name=source_name,
+            source_url=source_url,
+            evidence_quote=clean[:1800],
+            extraction_method=f"{method}_safety_warning",
+            review_status="unreviewed",
+            use_policy="candidate_signal",
+            updated_at=now_utc(),
+        ))
+    if section_name == "interaction":
+        facts.append(EvidenceFact(
+            fact_id=f"{slugify(source_name)}_interaction_{stable_hash(subject_id + section_name + clean[:1000])}",
+            fact_type="interaction_signal",
+            subject_ids=[subject_id],
+            claim={"section": section_name, "interaction_text": clean[:3000]},
+            risk_level="Major" if LABEL_RISK_RE.search(clean) else "Unknown",
+            confidence="Medium",
+            source_tier=tier,
+            source_name=source_name,
+            source_url=source_url,
+            evidence_quote=clean[:1800],
+            extraction_method=f"{method}_interaction_signal",
+            review_status="unreviewed",
+            use_policy="candidate_signal",
+            updated_at=now_utc(),
+        ))
+    return facts
+
+
+def openfda_label_evidence_facts(subject_id: str, result: dict[str, Any], source_name: str, source_url: str, method: str) -> list[EvidenceFact]:
+    facts: list[EvidenceFact] = []
+    for field, section in OPENFDA_LABEL_SECTION_MAP.items():
+        text = joined_sections(result, (field,))
+        if text:
+            facts.extend(label_evidence_facts(subject_id, section, text, source_name, source_url, method))
+    return dedupe_fact_objects(facts)
 
 
 def load_dailymed_bulk_facts(source_dir: Path, max_records: int = 100_000, max_files: int = 0) -> list[EvidenceFact]:
@@ -261,6 +354,7 @@ def dailymed_xml_facts(xml_bytes: bytes) -> list[EvidenceFact]:
     sections = list(spl_sections(root))
     effect_sections = [(section_title, text) for section_title, text in sections if matches_any(section_title, DAILYMED_EFFECT_SECTION_HINTS)]
     facts.extend(drug_effect_facts(subject_id, effect_sections, "DailyMed SPL bulk", url, "bulk_spl_xml"))
+    facts.extend(dailymed_label_evidence_facts(subject_id, sections, "DailyMed SPL bulk", url, "bulk_spl_xml"))
     text = "\n".join(text for section_title, text in sections if matches_any(section_title, DAILYMED_SECTION_HINTS))
     facts.extend(pk_and_enzyme_facts(subject_id, text, "DailyMed SPL bulk", url, "bulk_spl_xml"))
     overdose_text = "\n".join(text for section_title, text in sections if matches_any(section_title, ("OVERDOSAGE",)))
@@ -270,6 +364,20 @@ def dailymed_xml_facts(xml_bytes: bytes) -> list[EvidenceFact]:
     if dose_text:
         facts.extend(extract_dose_candidate_facts(subject_id, dose_text, "DailyMed SPL bulk", url, "bulk_spl_xml", section="dosage"))
     return facts
+
+
+def dailymed_label_evidence_facts(subject_id: str, sections: Iterable[tuple[str, str]], source_name: str, source_url: str, method: str) -> list[EvidenceFact]:
+    facts: list[EvidenceFact] = []
+    buckets: dict[str, list[str]] = {key: [] for key in DAILYMED_LABEL_SECTION_HINTS}
+    for section_title, text in sections:
+        for section, hints in DAILYMED_LABEL_SECTION_HINTS.items():
+            if matches_any(section_title, hints):
+                buckets[section].append(f"{section_title}\n{text}" if section_title else text)
+                break
+    for section, parts in buckets.items():
+        if parts:
+            facts.extend(label_evidence_facts(subject_id, section, "\n".join(parts), source_name, source_url, method))
+    return dedupe_fact_objects(facts)
 
 
 def drug_effect_facts(subject_id: str, sections: Iterable[tuple[str, str]], source_name: str, source_url: str, method: str) -> list[EvidenceFact]:
@@ -365,35 +473,254 @@ def pk_and_enzyme_facts(subject_id: str, text: str, source_name: str, source_url
 def load_pharmgkb_bulk_facts(source_dir: Path, max_records: int = 100_000, max_files: int = 0) -> list[EvidenceFact]:
     facts: list[EvidenceFact] = []
     count = 0
+    for fact in iter_pharmgkb_guideline_json_facts(source_dir, max_files=max_files):
+        facts.append(fact)
+        count += 1
+        if max_records and count >= max_records:
+            return dedupe_fact_objects(facts)
+    json_guideline_files = {path.name for path in select_files(iter_files(source_dir), max_files=max_files) if path.name == "guidelineAnnotations.json.zip"}
     for name, rows in iter_tabular_source(source_dir, max_files=max_files):
         lower_name = name.lower()
-        if not any(token in lower_name for token in ("drug", "chemical", "guideline", "label")):
+        if lower_name == "guidelineannotations.json.zip" and name in json_guideline_files:
+            continue
+        if not any(token in lower_name for token in ("drug", "chemical", "guideline", "label", "annotation", "relationship")):
             continue
         for row in rows:
-            drug = pick_column(row, ("Name", "Chemical", "Drug", "Drug Name", "Object Name"))
-            if not drug:
-                continue
-            subject_id = slugify(drug)
-            aliases = split_aliases(pick_column(row, ("Generic Names", "Trade Names", "Alternate Names", "Synonyms")))
+            row_facts = pharmgkb_row_facts(name, row)
+            for fact in row_facts:
+                facts.append(fact)
+                count += 1
+                if max_records and count >= max_records:
+                    return dedupe_fact_objects(facts)
+    return dedupe_fact_objects(facts)
+
+
+def pharmgkb_source_url(row: dict[str, str] | None = None) -> str:
+    if row:
+        url = pick_column(row, ("URL", "Url", "Link"))
+        if url:
+            return url
+    return "https://api.pharmgkb.org/"
+
+
+def pharmgkb_identity_fact(drug: str, row: dict[str, str], category_default: str = "PharmGKB chemical") -> EvidenceFact:
+    subject_id = slugify(drug)
+    aliases = split_aliases(";".join(filter(None, [
+        pick_column(row, ("Generic Names",)),
+        pick_column(row, ("Trade Names",)),
+        pick_column(row, ("Alternate Names", "Synonyms")),
+    ])))
+    return EvidenceFact(
+        fact_id=f"pharmgkb_identity_{stable_hash(subject_id + str(row))}",
+        fact_type="substance_identity",
+        subject_ids=[subject_id],
+        claim={
+            "name_en": drug,
+            "category": pick_column(row, ("Type", "Entity Type")) or category_default,
+            "identifiers": {
+                "aliases": aliases,
+                "pharmgkb_id": pick_column(row, ("PharmGKB Accession Id", "PharmGKB ID", "PharmGKB Accession ID")),
+                "rxnorm": split_aliases(pick_column(row, ("RxNorm Identifiers",))),
+                "atc": split_aliases(pick_column(row, ("ATC Identifiers",))),
+                "pubchem": split_aliases(pick_column(row, ("PubChem Compound Identifiers",))),
+                "dosing_guideline": pick_column(row, ("Dosing Guideline",)),
+                "top_cpic_level": pick_column(row, ("Top CPIC Pairs Level",)),
+            },
+        },
+        confidence="High",
+        source_tier="Guideline",
+        source_name="PharmGKB / ClinPGx bulk",
+        source_url="https://api.pharmgkb.org/",
+        evidence_quote="Bulk PharmGKB drug/chemical row.",
+        extraction_method="bulk_tsv",
+        review_status="machine_checked",
+        use_policy="evidence_source",
+        updated_at=now_utc(),
+    )
+
+
+def pharmgkb_row_facts(member_name: str, row: dict[str, str]) -> list[EvidenceFact]:
+    lower_name = member_name.lower()
+    facts: list[EvidenceFact] = []
+    if lower_name.endswith(".json") or lower_name == "guidelineannotations.json.zip":
+        guideline = row.get("guideline") if isinstance(row.get("guideline"), dict) else row
+        if isinstance(guideline, dict):
+            return list(pharmgkb_guideline_json_facts(guideline, member_name))
+        return facts
+    if lower_name in {"drugs.tsv", "chemicals.tsv"} or lower_name.endswith("/drugs.tsv") or lower_name.endswith("/chemicals.tsv"):
+        drug = pick_column(row, ("Name", "Chemical", "Drug", "Drug Name", "Object Name"))
+        if drug:
+            facts.append(pharmgkb_identity_fact(drug, row))
+        return facts
+    if lower_name.endswith("clinical_annotations.tsv") or lower_name == "clinical_annotations.tsv":
+        for drug in split_aliases(pick_column(row, ("Drug(s)", "Drugs", "Chemicals"))):
             facts.append(EvidenceFact(
-                fact_id=f"pharmgkb_identity_{stable_hash(subject_id + str(row))}",
-                fact_type="substance_identity",
-                subject_ids=[subject_id],
-                claim={"name_en": drug, "category": pick_column(row, ("Type", "Entity Type")) or "PharmGKB chemical", "identifiers": {"aliases": aliases, "pharmgkb_id": pick_column(row, ("PharmGKB Accession Id", "PharmGKB ID"))}},
+                fact_id=f"pharmgkb_pgx_clinical_annotation_{stable_hash(drug + str(row))}",
+                fact_type="pgx_clinical_annotation",
+                subject_ids=[slugify(drug)],
+                claim={
+                    "clinical_annotation_id": pick_column(row, ("Clinical Annotation ID", "Clinical Annotation Id")),
+                    "gene": pick_column(row, ("Gene", "Genes")),
+                    "variant_haplotypes": pick_column(row, ("Variant/Haplotypes", "Variant Haplotypes", "Variants/Haplotypes")),
+                    "level_of_evidence": pick_column(row, ("Level of Evidence",)),
+                    "phenotype_category": pick_column(row, ("Phenotype Category",)),
+                    "phenotypes": split_aliases(pick_column(row, ("Phenotype(s)", "Phenotypes"))),
+                    "score": pick_column(row, ("Score",)),
+                    "pmid_count": pick_column(row, ("PMID Count",)),
+                    "url": pharmgkb_source_url(row),
+                },
                 confidence="High",
                 source_tier="Guideline",
-                source_name="PharmGKB / ClinPGx bulk",
-                source_url="https://api.pharmgkb.org/",
-                evidence_quote="Bulk PharmGKB row.",
-                extraction_method="bulk_tsv",
+                source_name="PharmGKB / ClinPGx clinical annotation",
+                source_url=pharmgkb_source_url(row),
+                evidence_quote=json.dumps(compact_row(row, 20), ensure_ascii=False)[:1200],
+                extraction_method="bulk_tsv_clinical_annotation",
                 review_status="machine_checked",
                 use_policy="evidence_source",
                 updated_at=now_utc(),
             ))
-            count += 1
-            if max_records and count >= max_records:
-                return dedupe_fact_objects(facts)
-    return dedupe_fact_objects(facts)
+        return facts
+    if lower_name.endswith("druglabels.tsv") or lower_name == "druglabels.tsv":
+        for drug in split_aliases(pick_column(row, ("Chemicals", "Drug(s)", "Drugs", "Name"))):
+            facts.append(EvidenceFact(
+                fact_id=f"pharmgkb_pgx_drug_label_{stable_hash(drug + str(row))}",
+                fact_type="pgx_drug_label",
+                subject_ids=[slugify(drug)],
+                claim={
+                    "label_id": pick_column(row, ("PharmGKB ID", "PharmGKB Accession Id")),
+                    "name": pick_column(row, ("Name",)),
+                    "source": pick_column(row, ("Source",)),
+                    "testing_level": pick_column(row, ("Testing Level",)),
+                    "has_prescribing_info": pick_column(row, ("Has Prescribing Info",)),
+                    "has_dosing_info": pick_column(row, ("Has Dosing Info",)),
+                    "has_alternate_drug": pick_column(row, ("Has Alternate Drug",)),
+                    "genes": split_aliases(pick_column(row, ("Genes",))),
+                    "variants": split_aliases(pick_column(row, ("Variants/Haplotypes", "Variants"))),
+                },
+                confidence="High",
+                source_tier="Guideline",
+                source_name="PharmGKB / ClinPGx drug label",
+                source_url=pharmgkb_source_url(row),
+                evidence_quote=json.dumps(compact_row(row, 20), ensure_ascii=False)[:1200],
+                extraction_method="bulk_tsv_drug_label",
+                review_status="machine_checked",
+                use_policy="evidence_source",
+                updated_at=now_utc(),
+            ))
+        return facts
+    if lower_name.endswith("relationships.tsv") or lower_name == "relationships.tsv":
+        e1n = pick_column(row, ("Entity1_name", "Entity1 Name"))
+        e1t = pick_column(row, ("Entity1_type", "Entity1 Type"))
+        e2n = pick_column(row, ("Entity2_name", "Entity2 Name"))
+        e2t = pick_column(row, ("Entity2_type", "Entity2 Type"))
+        if e1n and e2n and (e1t == "Chemical" or e2t == "Chemical"):
+            drug = e1n if e1t == "Chemical" else e2n
+            other = e2n if e1t == "Chemical" else e1n
+            other_type = e2t if e1t == "Chemical" else e1t
+            facts.append(EvidenceFact(
+                fact_id=f"pharmgkb_pgx_relationship_{stable_hash(drug + other + str(row))}",
+                fact_type="pgx_relationship",
+                subject_ids=[slugify(drug)],
+                claim={
+                    "related_entity": other,
+                    "related_entity_type": other_type,
+                    "association": pick_column(row, ("Association",)),
+                    "evidence": pick_column(row, ("Evidence",)),
+                    "pk": pick_column(row, ("PK",)),
+                    "pd": pick_column(row, ("PD",)),
+                    "pmids": split_aliases(pick_column(row, ("PMIDs", "PMID"))),
+                },
+                confidence="Medium",
+                source_tier="Guideline",
+                source_name="PharmGKB / ClinPGx relationship",
+                source_url="https://api.pharmgkb.org/",
+                evidence_quote=json.dumps(compact_row(row, 20), ensure_ascii=False)[:1200],
+                extraction_method="bulk_tsv_relationship",
+                review_status="unreviewed",
+                use_policy="evidence_source",
+                updated_at=now_utc(),
+            ))
+        return facts
+    if any(token in lower_name for token in ("drug", "chemical", "guideline", "label")):
+        drug = pick_column(row, ("Name", "Chemical", "Drug", "Drug Name", "Object Name"))
+        if drug:
+            facts.append(pharmgkb_identity_fact(drug, row))
+    return facts
+
+
+def iter_pharmgkb_guideline_json_facts(source_dir: Path, max_files: int = 0) -> Iterator[EvidenceFact]:
+    for path in select_files(iter_files(source_dir), max_files):
+        if path.name != "guidelineAnnotations.json.zip" or not zipfile.is_zipfile(path):
+            continue
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.namelist():
+                if not member.lower().endswith(".json"):
+                    continue
+                try:
+                    payload = json.loads(archive.read(member).decode("utf-8"))
+                except Exception:
+                    continue
+                guideline = payload.get("guideline") if isinstance(payload.get("guideline"), dict) else payload
+                if not isinstance(guideline, dict):
+                    continue
+                yield from pharmgkb_guideline_json_facts(guideline, member)
+
+
+def pharmgkb_markdown_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return squash(value.get("html") or value.get("markdown") or value.get("text") or "")
+    return squash(str(value or ""))
+
+
+def pharmgkb_entity_names(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    for item in values:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("symbol")
+            if name:
+                out.append(str(name))
+    return out
+
+
+def pharmgkb_guideline_json_facts(guideline: dict[str, Any], member: str = "guideline") -> Iterator[EvidenceFact]:
+    name = str(guideline.get("name") or member)
+    chemicals = guideline.get("relatedChemicals") if isinstance(guideline.get("relatedChemicals"), list) else []
+    if not chemicals:
+        chemicals = [{"name": name}]
+    genes = pharmgkb_entity_names(guideline.get("relatedGenes"))
+    summary = pharmgkb_markdown_text(guideline.get("summaryMarkdown"))
+    text = pharmgkb_markdown_text(guideline.get("textMarkdown"))
+    for chemical in chemicals:
+        if not isinstance(chemical, dict):
+            continue
+        drug = str(chemical.get("name") or name).strip()
+        if not drug:
+            continue
+        yield EvidenceFact(
+            fact_id=f"pharmgkb_pgx_guideline_{stable_hash(drug + name + str(guideline.get('id')))}",
+            fact_type="pgx_guideline",
+            subject_ids=[slugify(drug)],
+            claim={
+                "guideline_id": guideline.get("id"),
+                "name": name,
+                "source": guideline.get("source"),
+                "genes": genes,
+                "dosing_information": guideline.get("dosingInformation"),
+                "testing_info": guideline.get("hasTestingInfo"),
+                "summary": summary[:1800],
+            },
+            confidence="High",
+            source_tier="Guideline",
+            source_name="PharmGKB / ClinPGx guideline",
+            source_url="https://api.pharmgkb.org/",
+            evidence_quote=(summary or text)[:1800],
+            extraction_method="bulk_json_guideline",
+            review_status="machine_checked",
+            use_policy="evidence_source",
+            updated_at=now_utc(),
+        )
 
 
 def load_onsides_bulk_facts(source_dir: Path, max_records: int = 100_000, max_files: int = 0) -> list[EvidenceFact]:
@@ -511,7 +838,7 @@ def load_foodrugs_bulk_facts(source_dir: Path, max_records: int = 100_000, max_f
                 fact_id=f"foodrugs_pair_{stable_hash(drug + food + str(row))}",
                 fact_type="food_interaction",
                 subject_ids=[drug_id, food_id],
-                claim={"mechanism": pick_column(row, ("mechanism", "interaction", "type")), "note": pick_column(row, ("note", "description", "evidence")) or f"FooDrugs candidate food-drug signal: {drug} / {food}"},
+                claim={"drug": drug, "food_or_bioactive": food, "mechanism": pick_column(row, ("mechanism", "interaction", "type")), "note": pick_column(row, ("note", "description", "evidence")) or f"FooDrugs candidate food-drug signal: {drug} / {food}"},
                 risk_level="Moderate" if re.search(r"inhibit|contra|risk|avoid|major", str(row), re.I) else "Unknown",
                 confidence="Low",
                 source_tier="Signal",
@@ -540,7 +867,7 @@ def load_foodrugs_bulk_facts(source_dir: Path, max_records: int = 100_000, max_f
                 fact_id=f"foodrugs_pair_{stable_hash(drug + food + str(row))}",
                 fact_type="food_interaction",
                 subject_ids=[drug_id, food_id],
-                claim={"mechanism": None, "note": f"FooDrugs text-mined candidate food-drug signal: {drug} / {food}", "text_id": row.get("texts_ID")},
+                claim={"drug": drug, "food_or_bioactive": food, "mechanism": None, "note": f"FooDrugs text-mined candidate food-drug signal: {drug} / {food}", "text_id": row.get("texts_ID")},
                 risk_level="Unknown",
                 confidence="Low",
                 source_tier="Signal",
@@ -1036,7 +1363,7 @@ def pick_column(row: dict[str, str], names: Iterable[str]) -> str:
 
 
 def split_aliases(value: str) -> list[str]:
-    return [part.strip() for part in re.split(r"[|;,]", value or "") if part.strip()][:30]
+    return [part.strip().strip('"') for part in re.split(r"[|;,]", value or "") if part.strip()][:50]
 
 
 def compact_row(row: dict[str, str], limit: int = 12) -> dict[str, str]:

@@ -58,6 +58,13 @@ const ui = {
   drugEffects: "\u836f\u6548 / \u4f5c\u7528\u673a\u5236",
   pharmacokinetics: "PK / \u836f\u4ee3\u7ebf\u7d22",
   enzymeRelations: "CYP / \u4ee3\u8c22\u9176\u5173\u7cfb",
+  labelSections: "\u6807\u7b7e\u6587\u6bb5",
+  safetyWarnings: "\u5b89\u5168\u8b66\u544a",
+  interactionSignals: "\u4ea4\u4e92\u4fe1\u53f7",
+  foodInteractions: "\u98df\u7269\u4ea4\u4e92\u5019\u9009",
+  adverseSignals: "\u4e0d\u826f\u4e8b\u4ef6\u4fe1\u53f7",
+  pgx: "PGx \u57fa\u56e0-\u836f\u7269\u8bc1\u636e",
+  overlayNotice: "\u65b0\u589e overlay \u4ec5\u4f5c\u8bc1\u636e\u5c55\u793a/\u590d\u6838\u7ebf\u7d22\uff1bUnknown \u2260 \u5b89\u5168\uff0cSignal/FooDrugs/OnSIDES \u4e0d\u4ee3\u8868\u56e0\u679c\u6216\u53d1\u751f\u7387\uff0cPGx \u4e0d\u662f\u4e2a\u4f53\u5316\u5904\u65b9\u5efa\u8bae\u3002",
   sources: "\u6765\u6e90\u6458\u8981",
   loading: "\u8bfb\u53d6\u8be6\u60c5\u4e2d...",
   error: "\u9519\u8bef",
@@ -77,6 +84,12 @@ function apiCacheKey() {
     counts.drug_effects,
     counts.pharmacokinetics,
     counts.enzyme_relations,
+    counts.label_sections,
+    counts.safety_warnings,
+    counts.interaction_signals,
+    counts.food_interactions,
+    counts.adverse_signals,
+    counts.pgx,
   ].filter(Boolean).join("-") || "boot";
 }
 
@@ -270,7 +283,14 @@ function updateStats() {
   $("interactionCount").textContent = formatNumber(counts.interactions || 0);
   $("doseCount").textContent = formatNumber(counts.dose_rules || 0);
   $("candidateCount").textContent = formatNumber(counts.dose_candidates || 0);
-  $("overdoseCount").textContent = formatNumber(counts.overdose_warnings || 0);
+  const overlayCount = (counts.overdose_warnings || 0)
+    + (counts.label_sections || 0)
+    + (counts.safety_warnings || 0)
+    + (counts.interaction_signals || 0)
+    + (counts.food_interactions || 0)
+    + (counts.adverse_signals || 0)
+    + (counts.pgx || 0);
+  $("overlayCount").textContent = formatNumber(overlayCount);
   $("effectCount").textContent = formatNumber(counts.drug_effects || 0);
   $("pkCount").textContent = formatNumber((counts.pharmacokinetics || 0) + (counts.enzyme_relations || 0));
   const sourceCount = state.manifest?.source_library?.sources_count
@@ -282,7 +302,7 @@ function updateStats() {
     || state.manifest?.full_package?.zip_bytes
     || 0;
   const packageText = packageBytes ? ` \u00b7 \u5168\u91cf\u5305 ${(packageBytes / 1024 / 1024).toFixed(1)} MB` : "";
-  $("apiMeta").textContent = `\u5df2\u52a0\u8f7d \u00b7 ${formatNumber(substanceTotal)} \u4e2a\u836f\u7269\u5b9e\u4f53 \u00b7 ${formatNumber(counts.interactions || 0)} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${formatNumber(counts.drug_effects || 0)} \u6761\u836f\u6548/\u673a\u5236 \u00b7 ${formatNumber(counts.dose_candidates || 0)} \u6761\u5242\u91cf\u5019\u9009 \u00b7 ${formatNumber(counts.overdose_warnings || 0)} \u6761\u8fc7\u91cf\u8b66\u544a${packageText}`;
+  $("apiMeta").textContent = `\u5df2\u52a0\u8f7d \u00b7 ${formatNumber(substanceTotal)} \u4e2a\u836f\u7269\u5b9e\u4f53 \u00b7 ${formatNumber(counts.interactions || 0)} \u6761\u76f8\u4e92\u4f5c\u7528 \u00b7 ${formatNumber(counts.drug_effects || 0)} \u6761\u836f\u6548/\u673a\u5236 \u00b7 ${formatNumber(counts.dose_candidates || 0)} \u6761\u5242\u91cf\u5019\u9009 \u00b7 ${formatNumber(overlayCount)} \u6761\u6807\u7b7e/\u5b89\u5168/\u4fe1\u53f7/PGx overlay${packageText}`;
 }
 
 function scoreItem(item, query) {
@@ -428,7 +448,21 @@ async function selectItem(item) {
   try {
     const detail = await fetchJson(paths.substance);
     const detailPaths = { ...paths, ...(detail.paths || {}) };
-    const [interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations] = await Promise.all([
+    const [
+      interactions,
+      doseRules,
+      doseCandidates,
+      overdoseWarnings,
+      drugEffects,
+      pharmacokinetics,
+      enzymeRelations,
+      labelSections,
+      safetyWarnings,
+      interactionSignals,
+      foodInteractions,
+      adverseSignals,
+      pgx,
+    ] = await Promise.all([
       safeFetch(detailPaths.interactions, { expectedCount: detail.interaction_count || 0 }),
       safeFetch(detailPaths.dose_rules, { expectedCount: detail.dose_rule_count || 0 }),
       safeFetch(detailPaths.dose_candidates, { expectedCount: detail.dose_candidate_count || 0 }),
@@ -436,8 +470,28 @@ async function selectItem(item) {
       safeFetch(detailPaths.drug_effects, { expectedCount: detail.drug_effect_count || 0 }),
       safeFetch(detailPaths.pharmacokinetics, { expectedCount: detail.pharmacokinetic_count || 0 }),
       safeFetch(detailPaths.enzyme_relations, { expectedCount: detail.enzyme_relation_count || 0 }),
+      safeFetch(detailPaths.label_sections, { expectedCount: detail.label_section_count || 0 }),
+      safeFetch(detailPaths.safety_warnings, { expectedCount: detail.safety_warning_count || 0 }),
+      safeFetch(detailPaths.interaction_signals, { expectedCount: detail.interaction_signal_count || 0 }),
+      safeFetch(detailPaths.food_interactions, { expectedCount: detail.food_interaction_count || 0 }),
+      safeFetch(detailPaths.adverse_signals, { expectedCount: detail.adverse_signal_count || 0 }),
+      safeFetch(detailPaths.pgx, { expectedCount: detail.pgx_count || 0 }),
     ]);
-    renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, mergePharmacokinetics(detail, pharmacokinetics), enzymeRelations);
+    renderDetail(detail, {
+      interactions,
+      doseRules,
+      doseCandidates,
+      overdoseWarnings,
+      drugEffects,
+      pharmacokinetics: mergePharmacokinetics(detail, pharmacokinetics),
+      enzymeRelations,
+      labelSections,
+      safetyWarnings,
+      interactionSignals,
+      foodInteractions,
+      adverseSignals,
+      pgx,
+    });
     const params = new URLSearchParams(window.location.search);
     params.set("id", item.id);
     if (state.query) params.set("q", state.query);
@@ -450,7 +504,20 @@ async function selectItem(item) {
   }
 }
 
-function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations) {
+function renderDetail(detail, overlays) {
+  const interactions = overlays.interactions || [];
+  const doseRules = overlays.doseRules || [];
+  const doseCandidates = overlays.doseCandidates || [];
+  const overdoseWarnings = overlays.overdoseWarnings || [];
+  const drugEffects = overlays.drugEffects || [];
+  const pharmacokinetics = overlays.pharmacokinetics || [];
+  const enzymeRelations = overlays.enzymeRelations || [];
+  const labelSections = overlays.labelSections || [];
+  const safetyWarnings = overlays.safetyWarnings || [];
+  const interactionSignals = overlays.interactionSignals || [];
+  const foodInteractions = overlays.foodInteractions || [];
+  const adverseSignals = overlays.adverseSignals || [];
+  const pgx = overlays.pgx || [];
   $("detailBadge").textContent = detail.id || ui.selected;
   const sortedInteractions = [...interactions]
     .sort((a, b) => (riskRank[b.risk_level] || 0) - (riskRank[a.risk_level] || 0))
@@ -477,7 +544,8 @@ function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseW
       <h4>${ui.identity}</h4>
       <p class="card-meta">${ui.aliases}${html(aliases)}</p>
       <p class="card-meta">${ui.cyp}${html(cyp)}</p>
-      <p class="card-meta">${ui.summary}${formatNumber(detail.drug_effect_count || drugEffects.length)} ${ui.drugEffects}\uff0c${formatNumber(detail.pharmacokinetic_count || pharmacokinetics.length)} ${ui.pharmacokinetics}\uff0c${formatNumber(detail.enzyme_relation_count || enzymeRelations.length)} ${ui.enzymeRelations}\uff0c${formatNumber(detail.interaction_count || sortedInteractions.length)} ${ui.interactions}\uff0c${formatNumber(detail.dose_rule_count || doseRules.length)} ${ui.doseRules}\uff0c${formatNumber(detail.dose_candidate_count || doseCandidates.length)} ${ui.doseCandidates}\uff0c${formatNumber(detail.overdose_warning_count || overdoseWarnings.length)} ${ui.overdoseWarnings}</p>
+      <p class="card-meta">${ui.summary}${formatNumber(detail.drug_effect_count || drugEffects.length)} ${ui.drugEffects}\uff0c${formatNumber(detail.pharmacokinetic_count || pharmacokinetics.length)} ${ui.pharmacokinetics}\uff0c${formatNumber(detail.enzyme_relation_count || enzymeRelations.length)} ${ui.enzymeRelations}\uff0c${formatNumber(detail.interaction_count || sortedInteractions.length)} ${ui.interactions}\uff0c${formatNumber(detail.dose_rule_count || doseRules.length)} ${ui.doseRules}\uff0c${formatNumber(detail.dose_candidate_count || doseCandidates.length)} ${ui.doseCandidates}\uff0c${formatNumber(detail.overdose_warning_count || overdoseWarnings.length)} ${ui.overdoseWarnings}\uff0c${formatNumber(detail.label_section_count || labelSections.length)} ${ui.labelSections}\uff0c${formatNumber(detail.safety_warning_count || safetyWarnings.length)} ${ui.safetyWarnings}\uff0c${formatNumber(detail.interaction_signal_count || interactionSignals.length)} ${ui.interactionSignals}\uff0c${formatNumber(detail.food_interaction_count || foodInteractions.length)} ${ui.foodInteractions}\uff0c${formatNumber(detail.adverse_signal_count || adverseSignals.length)} ${ui.adverseSignals}\uff0c${formatNumber(detail.pgx_count || pgx.length)} ${ui.pgx}</p>
+      <p class="card-meta overlay-note">${ui.overlayNotice}</p>
     </section>
     <section class="subsection">
       <h4>${ui.drugEffects} ${drugEffects.length}</h4>
@@ -506,6 +574,30 @@ function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseW
     <section class="subsection">
       <h4>${ui.interactions} Top ${sortedInteractions.length}</h4>
       <div class="stack">${renderInteractions(sortedInteractions)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.labelSections} ${labelSections.length}</h4>
+      <div class="stack">${renderLabelSections(labelSections)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.safetyWarnings} ${safetyWarnings.length}</h4>
+      <div class="stack">${renderSafetyWarnings(safetyWarnings)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.interactionSignals} ${interactionSignals.length}</h4>
+      <div class="stack">${renderInteractionSignals(interactionSignals)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.foodInteractions} ${foodInteractions.length}</h4>
+      <div class="stack">${renderFoodInteractions(foodInteractions)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.adverseSignals} ${adverseSignals.length}</h4>
+      <div class="stack">${renderAdverseSignals(adverseSignals)}</div>
+    </section>
+    <section class="subsection">
+      <h4>${ui.pgx} ${pgx.length}</h4>
+      <div class="stack">${renderPgx(pgx)}</div>
     </section>
     <section class="subsection">
       <h4>${ui.sources} ${sourceRows.length}</h4>
@@ -605,6 +697,94 @@ function renderInteractions(rows) {
   }).join("");
 }
 
+function renderLabelSections(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0\u6807\u7b7e\u6587\u6bb5\u6458\u5f55\u3002</div>';
+  return rows.slice(0, 12).map((row) => `
+    <article class="overlay-card label-section">
+      <div class="card-head"><strong>${html(row.section || "label_section")}</strong><span class="badge">${html(row.confidence || "Unknown")}</span></div>
+      <div class="card-meta">${html(row.source_name || "Unknown source")} \u00b7 ${html(row.source_tier || "Unknown")}${sourceLink(row)}</div>
+      <div class="card-meta effect-text">${html(row.text || "\u65e0\u6587\u672c")}</div>
+    </article>
+  `).join("") + (rows.length > 12 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 12 \u6761\u6807\u7b7e\u6587\u6bb5\uff0c\u5b8c\u6574\u8bb0\u5f55\u8bf7\u8bfb\u53d6\u5bf9\u5e94 label_sections JSON\u3002</div>` : "");
+}
+
+function renderSafetyWarnings(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0\u6807\u7b7e\u5b89\u5168\u8b66\u544a\u6458\u5f55\u3002</div>';
+  return rows.slice(0, 12).map((row) => {
+    const risk = row.risk_level || "Unknown";
+    return `
+      <article class="overlay-card warning">
+        <div class="card-head"><strong>${html(row.section || "warning")}</strong><span class="badge ${html(riskClass(risk))}">${html(riskLabels[risk] || risk)}</span></div>
+        <div class="card-meta">${html(row.source_name || "Unknown source")} \u00b7 ${html(row.source_tier || "Unknown")} \u00b7 ${html(row.confidence || "Unknown")}${sourceLink(row)}</div>
+        <div class="card-meta effect-text">${html(row.warning_text || "\u65e0\u6587\u672c")}</div>
+      </article>
+    `;
+  }).join("") + (rows.length > 12 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 12 \u6761\u5b89\u5168\u8b66\u544a\u3002</div>` : "");
+}
+
+function renderInteractionSignals(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0\u6807\u7b7e\u4ea4\u4e92\u4fe1\u53f7\u6458\u5f55\u3002</div>';
+  return rows.slice(0, 12).map((row) => {
+    const risk = row.risk_level || "Unknown";
+    return `
+      <article class="overlay-card signal">
+        <div class="card-head"><strong>${html(row.section || "interaction")}</strong><span class="badge ${html(riskClass(risk))}">${html(riskLabels[risk] || risk)}</span></div>
+        <div class="card-meta">${html(row.source_name || "Unknown source")} \u00b7 ${html(row.source_tier || "Unknown")} \u00b7 ${html(row.confidence || "Unknown")} \u00b7 ${html(row.signal_policy || "review_required")}${sourceLink(row)}</div>
+        <div class="card-meta effect-text">${html(row.interaction_text || "\u65e0\u6587\u672c")}</div>
+      </article>
+    `;
+  }).join("") + (rows.length > 12 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 12 \u6761\u4ea4\u4e92\u4fe1\u53f7\u3002</div>` : "");
+}
+
+function renderFoodInteractions(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0 FooDrugs \u98df\u7269/\u751f\u7269\u6d3b\u6027\u7269\u5019\u9009\u4fe1\u53f7\u3002</div>';
+  return rows.slice(0, 12).map((row) => {
+    const title = [row.drug, row.food_or_bioactive].filter(Boolean).join(" + ") || "food_interaction";
+    const risk = row.risk_level || "Unknown";
+    return `
+      <article class="overlay-card signal">
+        <div class="card-head"><strong>${html(title)}</strong><span class="badge ${html(riskClass(risk))}">${html(riskLabels[risk] || risk)}</span></div>
+        <div class="card-meta">${html(row.source_name || "FooDrugs")} \u00b7 ${html(row.source_tier || "Signal")} \u00b7 ${html(row.confidence || "Low")} \u00b7 ${html(row.signal_policy || "text_mined")}${sourceLink(row)}</div>
+        <div class="card-meta effect-text">${html(row.mechanism || row.note || "\u65e0\u6587\u672c")}</div>
+      </article>
+    `;
+  }).join("") + (rows.length > 12 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 12 \u6761\u98df\u7269\u4ea4\u4e92\u5019\u9009\u3002</div>` : "");
+}
+
+function renderAdverseSignals(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0 OnSIDES \u4e0d\u826f\u4e8b\u4ef6\u4fe1\u53f7\u3002</div>';
+  return rows.slice(0, 12).map((row) => {
+    const risk = row.risk_level || "Unknown";
+    const meta = [row.meddra_id && `MedDRA: ${row.meddra_id}`, row.match_method, row.score && `score: ${row.score}`].filter(Boolean).join(" \u00b7 ");
+    return `
+      <article class="overlay-card signal">
+        <div class="card-head"><strong>${html(row.event || "adverse_event")}</strong><span class="badge ${html(riskClass(risk))}">${html(riskLabels[risk] || risk)}</span></div>
+        <div class="card-meta">${html(row.source_name || "OnSIDES")} \u00b7 ${html(row.source_tier || "Signal")} \u00b7 ${html(row.confidence || "Low")} \u00b7 ${html(row.signal_policy || "not_causal")}${sourceLink(row)}</div>
+        ${meta ? `<div class="card-meta">${html(meta)}</div>` : ""}
+        <div class="card-meta effect-text">${html(row.label_section || "\u4ec5\u4f5c\u590d\u6838\u4fe1\u53f7\uff0c\u4e0d\u4ee3\u8868\u53d1\u751f\u7387\u6216\u56e0\u679c\u3002")}</div>
+      </article>
+    `;
+  }).join("") + (rows.length > 12 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 12 \u6761\u4e0d\u826f\u4e8b\u4ef6\u4fe1\u53f7\u3002</div>` : "");
+}
+
+function renderPgx(rows) {
+  if (!rows.length) return '<div class="empty">\u6682\u65e0 PharmGKB/ClinPGx \u8bc1\u636e\u884c\u3002</div>';
+  return rows.slice(0, 12).map((row) => {
+    const genes = Array.isArray(row.genes) ? row.genes.join(", ") : row.gene;
+    const title = [genes, row.section || row.fact_type || "pgx"].filter(Boolean).join(" \u00b7 ") || "PGx";
+    const meta = [row.level_of_evidence && `\u8bc1\u636e\u7b49\u7ea7: ${row.level_of_evidence}`, row.testing_level && `\u68c0\u6d4b\u7b49\u7ea7: ${row.testing_level}`, row.has_prescribing_info && "prescribing_info", row.has_dosing_info && "dosing_info"].filter(Boolean).join(" \u00b7 ");
+    const body = row.summary || row.evidence || row.association || row.name || "\u8bc1\u636e\u6458\u8981\u672a\u63d0\u4f9b";
+    return `
+      <article class="overlay-card pgx">
+        <div class="card-head"><strong>${html(title)}</strong><span class="badge">${html(row.confidence || "Unknown")}</span></div>
+        <div class="card-meta">${html(row.source_name || "PharmGKB")} \u00b7 ${html(row.source_tier || "Guideline")} \u00b7 ${html(row.policy || "evidence_only")}${sourceLink(row)}</div>
+        ${meta ? `<div class="card-meta">${html(meta)}</div>` : ""}
+        <div class="card-meta effect-text">${html(body)}</div>
+      </article>
+    `;
+  }).join("") + (rows.length > 12 ? `<div class="empty">\u4ec5\u663e\u793a\u524d 12 \u6761 PGx \u8bc1\u636e\u3002</div>` : "");
+}
+
 function renderDoseRules(rows) {
   if (!rows.length) return '<div class="empty">\u6682\u65e0\u5df2\u5f52\u4e00\u5316\u7684\u786c\u9608\u503c\u5242\u91cf\u89c4\u5219\u3002</div>';
   return rows.map((rule) => {
@@ -694,7 +874,7 @@ function bindEvents() {
     $("searchInput").value = "";
     $("detailBadge").textContent = "\u672a\u9009\u62e9";
     $("detail").className = "detail-card empty";
-    $("detail").textContent = "\u8bf7\u9009\u62e9\u836f\u7269\u67e5\u770b\u836f\u6548/\u673a\u5236\u3001PK \u7ebf\u7d22\u3001CYP \u5173\u7cfb\u3001\u76f8\u4e92\u4f5c\u7528\u3001\u5242\u91cf\u5019\u9009\u548c\u8fc7\u91cf\u8b66\u544a\u3002";
+    $("detail").textContent = "\u8bf7\u9009\u62e9\u836f\u7269\u67e5\u770b\u836f\u6548/\u673a\u5236\u3001PK \u7ebf\u7d22\u3001CYP \u5173\u7cfb\u3001\u76f8\u4e92\u4f5c\u7528\u3001\u5242\u91cf\u5019\u9009\u3001\u8fc7\u91cf\u8b66\u544a\u548c\u6807\u7b7e/\u5b89\u5168/PGx overlay\u3002";
     history.replaceState(null, "", window.location.pathname);
     renderSearchPrompt();
   });

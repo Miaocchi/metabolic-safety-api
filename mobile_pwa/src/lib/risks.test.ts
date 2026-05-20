@@ -25,6 +25,12 @@ describe("risk aggregation", () => {
         drugEffects: [],
         pharmacokinetics: [],
         enzymeRelations: [],
+        labelSections: [],
+        safetyWarnings: [],
+        interactionSignals: [],
+        foodInteractions: [],
+        adverseSignals: [],
+        pgx: [],
         fetchedAt: now,
         doseRules: [
           {
@@ -59,6 +65,12 @@ describe("risk aggregation", () => {
         drugEffects: [],
         pharmacokinetics: [],
         enzymeRelations: [],
+        labelSections: [],
+        safetyWarnings: [],
+        interactionSignals: [],
+        foodInteractions: [],
+        adverseSignals: [],
+        pgx: [],
         fetchedAt: now,
         interactions: [
           {

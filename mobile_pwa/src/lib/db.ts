@@ -1,3 +1,14 @@
+/**
+ * @module lib/db
+ *
+ * IndexedDB persistence — IO layer for journal, cache, and settings storage.
+ *
+ * NOTE: The repository layer (`repositories/`) provides the canonical
+ * abstraction for IndexedDB access. All four repository classes
+ * (journal, settings, substance-bundle, static-cache) wrap these functions.
+ * New code should prefer injecting repository instances via the interfaces
+ * in `repositories/interfaces.ts`.
+ */
 import type { JournalEntry, OfflineCacheRecord, PwaSettings, StaticDbStats, SubstanceBundle, UserProfile } from "../types";
 
 const DB_NAME = "metabolic_safety_mobile_pwa";
@@ -54,7 +65,7 @@ export async function clearJournal() {
 export async function cacheBundle(bundle: SubstanceBundle) {
   const record: OfflineCacheRecord<SubstanceBundle> = {
     key: `bundle:${bundle.detail.id}`,
-    value: bundle,
+    value: normalizeBundle(bundle),
     updatedAt: Date.now(),
   };
   await tx<IDBValidKey>("cache", "readwrite", (store) => store.put(record));
@@ -77,7 +88,7 @@ export async function getCachedStaticJson<T>(path: string) {
 
 export async function getCachedBundle(id: string) {
   const record = await tx<OfflineCacheRecord<SubstanceBundle> | undefined>("cache", "readonly", (store) => store.get(`bundle:${id}`));
-  return record?.value;
+  return normalizeBundle(record?.value);
 }
 
 export async function getCachedBundleIds() {
@@ -153,4 +164,28 @@ export async function loadSettings() {
 
 function normalizeStaticPath(path: string) {
   return String(path || "").replace(/^\/?api\//, "").replace(/^\//, "");
+}
+
+function normalizeBundle(bundle: SubstanceBundle): SubstanceBundle;
+function normalizeBundle(bundle: Partial<SubstanceBundle> | undefined): SubstanceBundle | undefined;
+function normalizeBundle(bundle?: Partial<SubstanceBundle>): SubstanceBundle | undefined {
+  if (!bundle?.detail) return undefined;
+  return {
+    ...bundle,
+    detail: bundle.detail,
+    interactions: Array.isArray(bundle.interactions) ? bundle.interactions : [],
+    doseRules: Array.isArray(bundle.doseRules) ? bundle.doseRules : [],
+    doseCandidates: Array.isArray(bundle.doseCandidates) ? bundle.doseCandidates : [],
+    overdoseWarnings: Array.isArray(bundle.overdoseWarnings) ? bundle.overdoseWarnings : [],
+    drugEffects: Array.isArray(bundle.drugEffects) ? bundle.drugEffects : [],
+    pharmacokinetics: Array.isArray(bundle.pharmacokinetics) ? bundle.pharmacokinetics : [],
+    enzymeRelations: Array.isArray(bundle.enzymeRelations) ? bundle.enzymeRelations : [],
+    labelSections: Array.isArray(bundle.labelSections) ? bundle.labelSections : [],
+    safetyWarnings: Array.isArray(bundle.safetyWarnings) ? bundle.safetyWarnings : [],
+    interactionSignals: Array.isArray(bundle.interactionSignals) ? bundle.interactionSignals : [],
+    foodInteractions: Array.isArray(bundle.foodInteractions) ? bundle.foodInteractions : [],
+    adverseSignals: Array.isArray(bundle.adverseSignals) ? bundle.adverseSignals : [],
+    pgx: Array.isArray(bundle.pgx) ? bundle.pgx : [],
+    fetchedAt: typeof bundle.fetchedAt === "number" ? bundle.fetchedAt : Date.now(),
+  } satisfies SubstanceBundle;
 }

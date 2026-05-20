@@ -180,5 +180,37 @@ describe("domain/safety", () => {
     it("contains signal candidate note", () => {
       expect(SAFETY_NOTES.signalCandidate).toContain("不代表因果关系");
     });
+
+    it("contains label text evidence note (not clinical instructions)", () => {
+      expect(SAFETY_NOTES.labelTextEvidence).toContain("证据摘录");
+      expect(SAFETY_NOTES.labelTextEvidence).toContain("不是临床用药指导");
+    });
+
+    it("contains safety warning extraction note (machine extraction caveat)", () => {
+      expect(SAFETY_NOTES.safetyWarningExtraction).toContain("机器提取");
+      expect(SAFETY_NOTES.safetyWarningExtraction).toContain("不能替代");
+    });
+
+    it("contains interaction signal review note (not DDInter replacement)", () => {
+      expect(SAFETY_NOTES.interactionSignalReview).toContain("DDInter");
+      expect(SAFETY_NOTES.interactionSignalReview).toContain("需人工复核");
+    });
+
+    it("contains food interaction candidate note (FooDrugs low confidence)", () => {
+      expect(SAFETY_NOTES.foodInteractionCandidate).toContain("FooDrugs");
+      expect(SAFETY_NOTES.foodInteractionCandidate).toContain("低置信度");
+      expect(SAFETY_NOTES.foodInteractionCandidate).toContain("不代表因果关系");
+    });
+
+    it("contains adverse signal note (not incidence or causality)", () => {
+      expect(SAFETY_NOTES.adverseSignalNotIncidence).toContain("OnSIDES");
+      expect(SAFETY_NOTES.adverseSignalNotIncidence).toContain("不代表发生率或因果关系");
+    });
+
+    it("contains PGx evidence-only note (not individualized prescribing)", () => {
+      expect(SAFETY_NOTES.pgxEvidenceOnly).toContain("PharmGKB");
+      expect(SAFETY_NOTES.pgxEvidenceOnly).toContain("不是个体化处方建议");
+      expect(SAFETY_NOTES.pgxEvidenceOnly).toContain("Unknown ≠ 安全");
+    });
   });
 });

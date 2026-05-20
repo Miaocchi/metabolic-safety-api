@@ -17,28 +17,93 @@ from metabolic_safety_etl.schemas import EvidenceFact  # noqa: E402
 
 API_VERSION = "static-drug-api-v1"
 
+_PGX_GROUP = {
+    "key": "pgx",
+    "prefix": "pgx/by-substance",
+    "manifest_dir": "pgx",
+    "path_key": "pgx",
+    "detail_count_key": "pgx_count",
+    "overlay_key": "pgx_overlay",
+    "policy": "PGx rows expose PharmGKB/ClinPGx gene-drug, label and guideline evidence for review; they are not individualized prescribing recommendations.",
+}
+
 CONTENT_GROUPS = {
     "drug_effect": {
         "key": "drug_effects",
         "prefix": "drug-effects/by-substance",
         "manifest_dir": "drug-effects",
+        "path_key": "drug_effects",
         "detail_count_key": "drug_effect_count",
+        "overlay_key": "drug_effect_overlay",
         "policy": "Drug effect rows expose label indications, purpose, pharmacodynamics and ChEMBL mechanism evidence as searchable evidence snippets.",
     },
     "pharmacokinetics": {
         "key": "pharmacokinetics",
         "prefix": "pharmacokinetics/by-substance",
         "manifest_dir": "pharmacokinetics",
+        "path_key": "pharmacokinetics",
         "detail_count_key": "pharmacokinetic_count",
+        "overlay_key": "pharmacokinetics_overlay",
         "policy": "PK rows expose structured pharmacokinetic values and label excerpts as evidence, not individualized dosing advice.",
     },
     "enzyme_relation": {
         "key": "enzyme_relations",
         "prefix": "enzyme-relations/by-substance",
         "manifest_dir": "enzyme-relations",
+        "path_key": "enzyme_relations",
         "detail_count_key": "enzyme_relation_count",
+        "overlay_key": "enzyme_relation_overlay",
         "policy": "Enzyme rows expose extracted CYP and transporter relations for downstream interaction review.",
     },
+    "label_section": {
+        "key": "label_sections",
+        "prefix": "label-sections/by-substance",
+        "manifest_dir": "label-sections",
+        "path_key": "label_sections",
+        "detail_count_key": "label_section_count",
+        "overlay_key": "label_section_overlay",
+        "policy": "Label section rows expose bounded DailyMed/openFDA excerpts for traceability; they are evidence text, not clinical instructions.",
+    },
+    "safety_warning": {
+        "key": "safety_warnings",
+        "prefix": "safety-warnings/by-substance",
+        "manifest_dir": "safety-warnings",
+        "path_key": "safety_warnings",
+        "detail_count_key": "safety_warning_count",
+        "overlay_key": "safety_warning_overlay",
+        "policy": "Safety warning rows expose label warning excerpts and risk wording for review; machine extraction must not override higher-trust curated rules.",
+    },
+    "interaction_signal": {
+        "key": "interaction_signals",
+        "prefix": "interaction-signals/by-substance",
+        "manifest_dir": "interaction-signals",
+        "path_key": "interaction_signals",
+        "detail_count_key": "interaction_signal_count",
+        "overlay_key": "interaction_signal_overlay",
+        "policy": "Interaction signal rows expose label interaction excerpts as review-required evidence and do not replace DDInter risk rules.",
+    },
+    "food_interaction": {
+        "key": "food_interactions",
+        "prefix": "food-interactions/by-substance",
+        "manifest_dir": "food-interactions",
+        "path_key": "food_interactions",
+        "detail_count_key": "food_interaction_count",
+        "overlay_key": "food_interaction_overlay",
+        "policy": "FooDrugs rows are text-mined food/bioactive-drug candidate signals. They are low-confidence, non-causal, and must not downgrade regulatory or curated evidence.",
+    },
+    "adverse_event": {
+        "key": "adverse_signals",
+        "prefix": "adverse-signals/by-substance",
+        "manifest_dir": "adverse-signals",
+        "path_key": "adverse_signals",
+        "detail_count_key": "adverse_signal_count",
+        "overlay_key": "adverse_signal_overlay",
+        "policy": "OnSIDES rows are label-derived adverse event signals, not incidence rates or causal attribution; use only as low-confidence review cues.",
+    },
+    "pgx_relationship": _PGX_GROUP,
+    "pgx_clinical_annotation": _PGX_GROUP,
+    "pgx_drug_label": _PGX_GROUP,
+    "pgx_guideline": _PGX_GROUP,
 }
 
 SOURCE_TIER_SCORE = {
@@ -55,6 +120,7 @@ SOURCE_TIER_SCORE = {
 }
 
 CONFIDENCE_SCORE = {"High": 3, "Medium": 2, "Low": 1, "Unknown": 0}
+RISK_SCORE = {"Contraindicated": 4, "Major": 3, "Moderate": 2, "Minor": 1, "NoKnownClinicalSignificance": 0, "Unknown": 0}
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -187,6 +253,13 @@ def fact_subject_id(fact: EvidenceFact) -> str:
     return str(fact.subject_ids[0] if fact.subject_ids else "unknown")
 
 
+def content_subject_ids(fact: EvidenceFact) -> list[str]:
+    if fact.fact_type == "food_interaction":
+        ids = [str(item) for item in fact.subject_ids if str(item)]
+        return ids or ["unknown"]
+    return [fact_subject_id(fact)]
+
+
 def iter_fact_json(path: Path, fact_types: set[str] | None = None) -> Iterator[EvidenceFact]:
     if not path.exists():
         print(f"skip_missing_fact_json={path}")
@@ -291,6 +364,121 @@ def compact_enzyme_relation_fact(fact: EvidenceFact) -> dict[str, Any]:
     }
 
 
+def compact_label_section_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "section": claim.get("section") or fact.fact_type,
+        "text": html_safe_excerpt(claim.get("text_excerpt") or claim.get("text") or fact.evidence_quote, 2200),
+    }
+
+
+def compact_safety_warning_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "risk_level": fact.risk_level or "Unknown",
+        "section": claim.get("section") or "warning",
+        "warning_text": html_safe_excerpt(claim.get("warning_text") or claim.get("text_excerpt") or fact.evidence_quote, 2200),
+    }
+
+
+def compact_interaction_signal_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "risk_level": fact.risk_level or "Unknown",
+        "section": claim.get("section") or "interaction",
+        "interaction_text": html_safe_excerpt(claim.get("interaction_text") or claim.get("text_excerpt") or fact.evidence_quote, 2200),
+        "signal_policy": "review_required_label_signal",
+    }
+
+
+def compact_food_interaction_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    subject_ids = [str(item) for item in fact.subject_ids]
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "risk_level": fact.risk_level or "Unknown",
+        "drug": claim.get("drug") or (subject_ids[0] if subject_ids else None),
+        "drug_id": subject_ids[0] if subject_ids else None,
+        "food_or_bioactive": claim.get("food_or_bioactive") or claim.get("food") or (subject_ids[1] if len(subject_ids) > 1 else None),
+        "food_or_bioactive_id": subject_ids[1] if len(subject_ids) > 1 else None,
+        "mechanism": claim.get("mechanism"),
+        "note": html_safe_excerpt(claim.get("note") or fact.evidence_quote, 1400),
+        "signal_policy": "low_confidence_text_mined_non_causal",
+    }
+
+
+def compact_adverse_event_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    return {
+        "fact_id": fact.fact_id,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url,
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "risk_level": fact.risk_level or "Unknown",
+        "event": claim.get("event") or fact.evidence_quote,
+        "meddra_id": claim.get("meddra_id"),
+        "label_section": claim.get("label_section"),
+        "match_method": claim.get("match_method"),
+        "score": claim.get("pred1") or claim.get("score"),
+        "signal_policy": "label_derived_signal_not_incidence_or_causality",
+    }
+
+
+def compact_pgx_fact(fact: EvidenceFact) -> dict[str, Any]:
+    claim = fact.claim
+    return {
+        "fact_id": fact.fact_id,
+        "fact_type": fact.fact_type,
+        "source_key": fact.extraction_method,
+        "source_name": fact.source_name,
+        "source_url": fact.source_url or claim.get("url"),
+        "source_tier": fact.source_tier,
+        "confidence": fact.confidence,
+        "section": claim.get("section") or fact.fact_type.replace("pgx_", ""),
+        "gene": claim.get("gene"),
+        "genes": claim.get("genes") if isinstance(claim.get("genes"), list) else None,
+        "variants": claim.get("variants") or claim.get("variant_haplotypes"),
+        "phenotypes": claim.get("phenotypes"),
+        "level_of_evidence": claim.get("level_of_evidence"),
+        "testing_level": claim.get("testing_level"),
+        "has_prescribing_info": claim.get("has_prescribing_info"),
+        "has_dosing_info": claim.get("has_dosing_info") or claim.get("dosing_information"),
+        "association": claim.get("association"),
+        "related_entity": claim.get("related_entity"),
+        "related_entity_type": claim.get("related_entity_type"),
+        "guideline_id": claim.get("guideline_id"),
+        "name": claim.get("name"),
+        "summary": html_safe_excerpt(claim.get("summary") or fact.evidence_quote, 1800),
+        "evidence": html_safe_excerpt(claim.get("evidence") or fact.evidence_quote, 1200),
+        "policy": "evidence_only_no_individualized_prescribing",
+    }
+
+
 def compact_content_fact(fact: EvidenceFact) -> dict[str, Any] | None:
     if fact.fact_type == "drug_effect":
         row = compact_drug_effect_fact(fact)
@@ -304,6 +492,30 @@ def compact_content_fact(fact: EvidenceFact) -> dict[str, Any] | None:
         row = compact_enzyme_relation_fact(fact)
         if row.get("tag") or row.get("enzyme") or row.get("text"):
             return row
+    if fact.fact_type == "label_section":
+        row = compact_label_section_fact(fact)
+        if row.get("text"):
+            return row
+    if fact.fact_type == "safety_warning":
+        row = compact_safety_warning_fact(fact)
+        if row.get("warning_text"):
+            return row
+    if fact.fact_type == "interaction_signal":
+        row = compact_interaction_signal_fact(fact)
+        if row.get("interaction_text"):
+            return row
+    if fact.fact_type == "food_interaction":
+        row = compact_food_interaction_fact(fact)
+        if row.get("food_or_bioactive") or row.get("note"):
+            return row
+    if fact.fact_type == "adverse_event":
+        row = compact_adverse_event_fact(fact)
+        if row.get("event"):
+            return row
+    if fact.fact_type in {"pgx_relationship", "pgx_clinical_annotation", "pgx_drug_label", "pgx_guideline"}:
+        row = compact_pgx_fact(fact)
+        if row.get("gene") or row.get("genes") or row.get("variants") or row.get("summary") or row.get("related_entity") or row.get("evidence"):
+            return row
     return None
 
 
@@ -312,16 +524,41 @@ def compact_key(value: Any, limit: int = 700) -> str:
 
 
 def content_dedupe_key(row: dict[str, Any]) -> str:
-    basis = row.get("mechanism_of_action") or row.get("effect_text") or row.get("text") or row.get("tag") or row.get("fact_id")
+    basis = (
+        row.get("mechanism_of_action")
+        or row.get("effect_text")
+        or row.get("warning_text")
+        or row.get("interaction_text")
+        or row.get("text")
+        or row.get("tag")
+        or row.get("event")
+        or row.get("note")
+        or row.get("summary")
+        or row.get("evidence")
+        or row.get("fact_id")
+    )
     return compact_key(basis)
 
 
-def content_priority(row: dict[str, Any]) -> tuple[int, int, int, int]:
+def content_priority(row: dict[str, Any]) -> tuple[int, int, int, int, int]:
     tier = SOURCE_TIER_SCORE.get(str(row.get("source_tier") or "Unknown"), 0)
     confidence = CONFIDENCE_SCORE.get(str(row.get("confidence") or "Unknown"), 0)
-    mechanism = 1 if row.get("mechanism_of_action") or row.get("target") or row.get("tag") else 0
-    text_size = min(len(str(row.get("effect_text") or row.get("mechanism_of_action") or row.get("text") or "")), 2000)
-    return tier, confidence, mechanism, text_size
+    risk = RISK_SCORE.get(str(row.get("risk_level") or "Unknown"), 0)
+    structured = 1 if row.get("mechanism_of_action") or row.get("target") or row.get("tag") or row.get("gene") or row.get("genes") or row.get("event") else 0
+    text_size = min(len(str(row.get("effect_text") or row.get("mechanism_of_action") or row.get("warning_text") or row.get("interaction_text") or row.get("text") or row.get("note") or row.get("summary") or row.get("evidence") or "")), 2000)
+    return tier, confidence, risk, structured, text_size
+
+
+def unique_content_group_specs() -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for spec in CONTENT_GROUPS.values():
+        key = str(spec["key"])
+        if key in seen:
+            continue
+        seen.add(key)
+        specs.append(spec)
+    return specs
 
 
 def add_capped_content_row(bucket: list[dict[str, Any]], seen_keys: set[str], row: dict[str, Any], max_per_subject: int) -> None:
@@ -515,13 +752,13 @@ def load_overlay_fact_json_rows(fact_json_paths: list[Path], max_per_subject: in
     return dose_by_subject, overdose_by_subject, names
 
 def empty_content_maps() -> dict[str, dict[str, list[dict[str, Any]]]]:
-    return {spec["key"]: {} for spec in CONTENT_GROUPS.values()}
+    return {spec["key"]: {} for spec in unique_content_group_specs()}
 
 
 def load_content_rows(db_paths: list[Path], max_per_subject: int = 24) -> tuple[dict[str, dict[str, list[dict[str, Any]]]], dict[str, str]]:
     content_maps = empty_content_maps()
     names: dict[str, str] = {}
-    seen_by_group: dict[str, dict[str, set[str]]] = {spec["key"]: {} for spec in CONTENT_GROUPS.values()}
+    seen_by_group: dict[str, dict[str, set[str]]] = {spec["key"]: {} for spec in unique_content_group_specs()}
     for db_path in db_paths:
         if not db_path.exists():
             continue
@@ -529,36 +766,36 @@ def load_content_rows(db_paths: list[Path], max_per_subject: int = 24) -> tuple[
             group_key = spec["key"]
             for row in iter_rows(db_path, fact_type):
                 fact = row_to_fact(row)
-                sid = fact_subject_id(fact)
-                names.setdefault(sid, str(row["name"] or sid))
                 payload = compact_content_fact(fact)
                 if not payload:
                     continue
-                bucket = content_maps[group_key].setdefault(sid, [])
-                seen_keys = seen_by_group[group_key].setdefault(sid, set())
-                add_capped_content_row(bucket, seen_keys, payload, max_per_subject=max_per_subject)
+                for sid in content_subject_ids(fact):
+                    names.setdefault(sid, str(row["name"] or sid))
+                    bucket = content_maps[group_key].setdefault(sid, [])
+                    seen_keys = seen_by_group[group_key].setdefault(sid, set())
+                    add_capped_content_row(bucket, seen_keys, payload, max_per_subject=max_per_subject)
     return content_maps, names
 
 
 def load_content_fact_json_rows(fact_json_paths: list[Path], max_per_subject: int = 24) -> tuple[dict[str, dict[str, list[dict[str, Any]]]], dict[str, str]]:
     content_maps = empty_content_maps()
     names: dict[str, str] = {}
-    seen_by_group: dict[str, dict[str, set[str]]] = {spec["key"]: {} for spec in CONTENT_GROUPS.values()}
+    seen_by_group: dict[str, dict[str, set[str]]] = {spec["key"]: {} for spec in unique_content_group_specs()}
     for path in fact_json_paths:
         loaded = 0
         for fact in iter_fact_json(path, set(CONTENT_GROUPS)):
             spec = CONTENT_GROUPS.get(fact.fact_type)
             if not spec:
                 continue
-            sid = fact_subject_id(fact)
-            names.setdefault(sid, sid.replace("_", " ").title())
             payload = compact_content_fact(fact)
             if not payload:
                 continue
             group_key = spec["key"]
-            bucket = content_maps[group_key].setdefault(sid, [])
-            seen_keys = seen_by_group[group_key].setdefault(sid, set())
-            add_capped_content_row(bucket, seen_keys, payload, max_per_subject=max_per_subject)
+            for sid in content_subject_ids(fact):
+                names.setdefault(sid, sid.replace("_", " ").title())
+                bucket = content_maps[group_key].setdefault(sid, [])
+                seen_keys = seen_by_group[group_key].setdefault(sid, set())
+                add_capped_content_row(bucket, seen_keys, payload, max_per_subject=max_per_subject)
             loaded += 1
             if loaded % 50000 == 0:
                 print(f"content_fact_json_progress={path} facts={loaded}", flush=True)
@@ -583,6 +820,23 @@ def content_subjects(content_maps: dict[str, dict[str, list[dict[str, Any]]]]) -
     return subjects
 
 
+def content_record_count(subject_map: dict[str, list[dict[str, Any]]]) -> int:
+    seen: set[str] = set()
+    anonymous = 0
+    for rows in subject_map.values():
+        for row in rows:
+            fact_id = str(row.get("fact_id") or "")
+            if fact_id:
+                seen.add(fact_id)
+            else:
+                key = content_dedupe_key(row)
+                if key:
+                    seen.add(key)
+                else:
+                    anonymous += 1
+    return len(seen) + anonymous
+
+
 def update_content_search_details(api_dir: Path, content_maps: dict[str, dict[str, list[dict[str, Any]]]], names: dict[str, str], identities: dict[str, dict[str, Any]]) -> int:
     search_path = api_dir / "search" / "index.json"
     search_index = read_json(search_path, [])
@@ -595,10 +849,9 @@ def update_content_search_details(api_dir: Path, content_maps: dict[str, dict[st
             "dose_rules": id_path("dose-rules/by-substance", sid),
             "dose_candidates": id_path("dose-candidates/by-substance", sid),
             "overdose_warnings": id_path("overdose-warnings/by-substance", sid),
-            "drug_effects": id_path("drug-effects/by-substance", sid),
-            "pharmacokinetics": id_path("pharmacokinetics/by-substance", sid),
-            "enzyme_relations": id_path("enzyme-relations/by-substance", sid),
         }
+        for spec in unique_content_group_specs():
+            paths[str(spec["path_key"])] = id_path(str(spec["prefix"]), sid)
         if sid not in by_id:
             identity = identities.get(sid, {})
             by_id[sid] = {
@@ -627,7 +880,7 @@ def update_content_search_details(api_dir: Path, content_maps: dict[str, dict[st
                 "remote_source": API_VERSION,
             }
         detail.setdefault("paths", {}).update(by_id[sid]["paths"])
-        for spec in CONTENT_GROUPS.values():
+        for spec in unique_content_group_specs():
             detail[spec["detail_count_key"]] = len(content_maps.get(spec["key"], {}).get(sid, []))
         detail["remote_source"] = API_VERSION
         write_json(detail_path, detail)
@@ -644,7 +897,7 @@ def export_content_overlay_from_sources(api_dir: Path, db_paths: list[Path], fac
     all_subjects = content_subjects(content_maps)
     identities = load_identities(db_paths, all_subjects)
     identities = load_json_identities(fact_json_paths, all_subjects, identities)
-    for fact_type, spec in CONTENT_GROUPS.items():
+    for spec in unique_content_group_specs():
         group_key = spec["key"]
         prefix = spec["prefix"]
         for sid, rows in sorted(content_maps.get(group_key, {}).items()):
@@ -657,10 +910,10 @@ def export_content_overlay_from_sources(api_dir: Path, db_paths: list[Path], fac
         "search_substances": search_count,
         "max_per_substance": max_per_subject or None,
     }
-    for spec in CONTENT_GROUPS.values():
+    for spec in unique_content_group_specs():
         group_key = spec["key"]
         subject_map = content_maps.get(group_key, {})
-        count = sum(len(rows) for rows in subject_map.values())
+        count = content_record_count(subject_map)
         summary[group_key] = count
         summary[f"substances_with_{group_key}"] = len(subject_map)
         write_json(api_dir / spec["manifest_dir"] / "manifest.json", {
@@ -1040,12 +1293,13 @@ def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_path
     counts["drug_effects"] = content_overlay.get("drug_effects", 0)
     counts["pharmacokinetics"] = content_overlay.get("pharmacokinetics", 0)
     counts["enzyme_relations"] = content_overlay.get("enzyme_relations", 0)
+    for spec in unique_content_group_specs():
+        counts[str(spec["key"])] = content_overlay.get(str(spec["key"]), counts.get(str(spec["key"]), 0))
     paths = manifest.setdefault("paths", {})
     paths["dose_candidates_by_substance"] = "search index item paths.dose_candidates"
     paths["overdose_warnings_by_substance"] = "search index item paths.overdose_warnings"
-    paths["drug_effects_by_substance"] = "search index item paths.drug_effects"
-    paths["pharmacokinetics_by_substance"] = "search index item paths.pharmacokinetics"
-    paths["enzyme_relations_by_substance"] = "search index item paths.enzyme_relations"
+    for spec in unique_content_group_specs():
+        paths[f"{spec['key']}_by_substance"] = f"search index item paths.{spec['path_key']}"
     paths["search_shards"] = "search/shards/{key}.json"
     search_overlay = export_search_lookup(api_dir)
     manifest["search_overlay"] = {
@@ -1066,18 +1320,11 @@ def export_overlay_from_maps(api_dir: Path, db_paths: list[Path], fact_json_path
         "manifest": "dose-rules/manifest.json",
         "policy": dose_rule_overlay["policy"],
     }
-    manifest["drug_effect_overlay"] = {
-        "manifest": "drug-effects/manifest.json",
-        "policy": CONTENT_GROUPS["drug_effect"]["policy"],
-    }
-    manifest["pharmacokinetics_overlay"] = {
-        "manifest": "pharmacokinetics/manifest.json",
-        "policy": CONTENT_GROUPS["pharmacokinetics"]["policy"],
-    }
-    manifest["enzyme_relation_overlay"] = {
-        "manifest": "enzyme-relations/manifest.json",
-        "policy": CONTENT_GROUPS["enzyme_relation"]["policy"],
-    }
+    for spec in unique_content_group_specs():
+        manifest[str(spec["overlay_key"])] = {
+            "manifest": f"{spec['manifest_dir']}/manifest.json",
+            "policy": spec["policy"],
+        }
     write_json(manifest_path, manifest)
     return overlay_manifest | {"search_substances": search_count, "dose_rule_overlay": dose_rule_overlay, "content_overlay": content_overlay}
 

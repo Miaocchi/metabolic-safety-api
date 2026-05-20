@@ -1,4 +1,22 @@
 {
+  "name": "metabolic-safety-monorepo",
+  "private": true,
+  "description": "Monorepo root — delegates to mobile_pwa, android, and Python ETL via npm scripts",
+  "scripts": {
+    "mobile:dev": "npm run dev --prefix mobile_pwa",
+    "mobile:build": "npm run build --prefix mobile_pwa",
+    "mobile:test": "npm test --prefix mobile_pwa",
+    "mobile:preview": "npm run preview --prefix mobile_pwa",
+    "mobile:install": "npm install --prefix mobile_pwa",
+    "android:sync": "npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:update": "npx cap update android",
+    "data:cli": "node tools/npm_python_runner.js cli",
+    "data:demo": "npm run data:cli -- demo --out build",
+    "data:test": "node tools/npm_python_runner.js test",
+    "data:export-static-api": "npm run data:cli -- export-static-api --input-dir build --out public/api",
+    "data:sources": "npm run data:cli -- sources --out build/source_status.json"
+  },
   "dependencies": {
     "@capacitor/android": "^5.7.8",
     "@capacitor/cli": "^5.7.8",

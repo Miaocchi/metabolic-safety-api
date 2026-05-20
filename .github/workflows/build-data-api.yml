@@ -11,6 +11,10 @@ on:
         description: "Debug cap per source; 0 means all upstream parts"
         required: true
         default: "0"
+      max_content_per_substance:
+        description: "Maximum content/signal/PGx rows exported per substance; 0 exports all"
+        required: true
+        default: "24"
   schedule:
     - cron: "23 19 * * 0"
   push:
@@ -34,8 +38,28 @@ concurrency:
 
 env:
   ALL_BULK_SOURCES: openfda_label,dailymed,chembl,foodrugs,onsides,pharmgkb
+  DEFAULT_MAX_CONTENT_PER_SUBSTANCE: "24"
 
 jobs:
+  test-etl:
+    name: Test ETL and overlay code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Test ETL
+        run: python -m unittest discover -s tests
+
   source-layer-cache:
     name: Build/cache source layer (${{ matrix.source }})
     runs-on: ubuntu-latest
@@ -120,11 +144,14 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    needs: source-layer-cache
+    needs:
+      - test-etl
+      - source-layer-cache
     env:
       RAW_MAX_RECORDS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_max_records || '0' }}
       RAW_STREAM_MAX_PARTS: ${{ github.event_name == 'workflow_dispatch' && inputs.raw_stream_max_parts || '0' }}
-    if: ${{ always() && !cancelled() && needs.source-layer-cache.result == 'success' }}
+      MAX_CONTENT_PER_SUBSTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.max_content_per_substance || '24' }}
+    if: ${{ always() && !cancelled() && needs.test-etl.result == 'success' && needs.source-layer-cache.result == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -140,9 +167,6 @@ jobs:
 
       - name: Install package
         run: python -m pip install -e .
-
-      - name: Test ETL
-        run: python -m unittest discover -s tests
 
       - name: Resolve all upstream manifest fingerprints
         id: manifests
@@ -237,7 +261,7 @@ jobs:
           set -euo pipefail
           python tools/export_dose_overlay.py \
             --api-dir public/api \
-            --max-content-per-substance 24 \
+            --max-content-per-substance "${MAX_CONTENT_PER_SUBSTANCE}" \
             --fact-json .cache/metabolic-source-facts/openfda_label/evidence_facts.json \
             --fact-json .cache/metabolic-source-facts/dailymed/evidence_facts.json \
             --fact-json .cache/metabolic-source-facts/chembl/evidence_facts.json \

@@ -176,7 +176,7 @@ export function CurvePage({ entries, bundles, profile, risks, onAddEntry, onGoto
               <div key={series.id} className="legend-row">
                 <i style={{ background: series.color }} />
                 <span>{series.label}</span>
-                <strong>{series.current.toFixed(series.current < 1 ? 3 : 2)} mg/L</strong>
+                <strong>{series.current.toFixed(series.current < 1 ? 3 : 2)} mg/L · t1/2 {series.baseHalfLifeHours.toFixed(1)}→{series.adjustedHalfLifeHours.toFixed(1)}h</strong>
               </div>
             ))}
           </div>

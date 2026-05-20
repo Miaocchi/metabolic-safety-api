@@ -2,6 +2,11 @@ name: Build Static Drug API to Cloudflare Pages
 
 on:
   workflow_dispatch:
+    inputs:
+      max_content_per_substance:
+        description: "Maximum content/signal/PGx rows exported per substance; 0 exports all"
+        required: true
+        default: "24"
 
 permissions:
   contents: read
@@ -11,10 +16,15 @@ concurrency:
   group: "cloudflare-pages-drug-api"
   cancel-in-progress: false
 
+env:
+  DEFAULT_MAX_CONTENT_PER_SUBSTANCE: "24"
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     name: Build and deploy static API
+    env:
+      MAX_CONTENT_PER_SUBSTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.max_content_per_substance || '24' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,7 +52,20 @@ jobs:
             --max-public-terms 120 \
             --public-limit 2 \
             --public-workers 8 \
-            --psychonautwiki-pages 3
+            --psychonautwiki-pages 3 \
+            --extra-facts data/optional \
+            --extra-facts data/overrides
+
+      - name: Export seed-backed overlays into static API
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Cloudflare Pages workflow exports overlays from build/app_seed.sqlite only."
+          echo "Use build-data-api.yml for full source-layer overlays from openFDA/DailyMed/FooDrugs/OnSIDES/PharmGKB caches."
+          python tools/export_dose_overlay.py \
+            --api-dir public/api \
+            --max-content-per-substance "${MAX_CONTENT_PER_SUBSTANCE}" \
+            --structured-db build/app_seed.sqlite
 
       - name: Copy search web UI
         shell: bash

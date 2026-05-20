@@ -340,11 +340,26 @@ function saveRemoteSubstanceCache() {
 function normalizeRemoteSubstance(substance = {}) {
   const identifiers = substance.identifiers || {};
   const aliases = Array.isArray(substance.aliases) ? substance.aliases.join(", ") : (substance.aliases || identifiers.aliases || "");
-  return {
+  const normalized = {
     ...substance,
     identifiers: { ...identifiers, aliases },
     remote_source: substance.remote_source || "remote_static_api",
   };
+  const halfLife = baselineHalfLifeHours(normalized, null);
+  const onset = baselineOnsetMinutes(normalized, null);
+  const duration = baselineDurationMinutes(normalized, null);
+  const pkRows = normalizePharmacokineticRows(normalized);
+  const enriched = {
+    ...normalized,
+    pharmacokinetics: pkRows.length ? pkRows : normalized.pharmacokinetics,
+  };
+  const resolvedHalfLife = positiveNumber(normalized.base_half_life) ?? halfLife;
+  const resolvedOnset = positiveNumber(normalized.base_onset) ?? onset;
+  const resolvedDuration = positiveNumber(normalized.base_duration) ?? duration;
+  if (resolvedHalfLife !== null) enriched.base_half_life = resolvedHalfLife;
+  if (resolvedOnset !== null) enriched.base_onset = resolvedOnset;
+  if (resolvedDuration !== null) enriched.base_duration = resolvedDuration;
+  return enriched;
 }
 
 function mergeRemoteSubstance(substance = {}, persist = true) {
@@ -468,11 +483,19 @@ function mergeRemoteEvidenceIntoSubstance(substance = {}, evidence = {}) {
   };
   const enzymeTags = remoteEvidence.enzyme_relations.map((row) => row.tag).filter(Boolean);
   const cypTags = [...new Set([...(substance.cyp_tags || []), ...enzymeTags])];
-  const pkHalfLife = remoteEvidence.pharmacokinetics.find((row) => row.half_life_hours !== null && row.half_life_hours !== undefined)?.half_life_hours;
+  const merged = {
+    ...substance,
+    remote_evidence: remoteEvidence,
+  };
+  const pkHalfLife = baselineHalfLifeHours(merged, null);
+  const pkOnset = baselineOnsetMinutes(merged, null);
+  const pkDuration = baselineDurationMinutes(merged, null);
   return {
     ...substance,
     cyp_tags: cypTags,
-    base_half_life: substance.base_half_life || pkHalfLife || undefined,
+    base_half_life: positiveNumber(substance.base_half_life) ?? pkHalfLife ?? undefined,
+    base_onset: positiveNumber(substance.base_onset) ?? pkOnset ?? undefined,
+    base_duration: positiveNumber(substance.base_duration) ?? pkDuration ?? undefined,
     remote_evidence: remoteEvidence,
   };
 }
@@ -515,6 +538,67 @@ function normalizeRemoteList(payload) {
   if (Array.isArray(payload?.items)) return payload.items;
   if (payload && typeof payload === "object") return [payload];
   return [];
+}
+
+function positiveNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function normalizePharmacokineticRows(substance = {}) {
+  const rows = [
+    ...normalizeRemoteList(substance.pharmacokinetics),
+    ...normalizeRemoteList(substance.pharmacokinetics_detail),
+    ...normalizeRemoteList(substance.remote_evidence?.pharmacokinetics),
+  ];
+  const seen = new Set();
+  const merged = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const key = [
+      row.fact_id,
+      row.source_name,
+      row.standard_type,
+      row.route,
+      row.half_life_hours,
+      row.half_life_hours_mean,
+      row.half_life_hours_upper,
+      row.onset_minutes,
+      row.duration_minutes,
+    ].map((part) => String(part ?? "")).join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+  return merged;
+}
+
+function firstPkNumber(substance = {}, fields = []) {
+  for (const row of normalizePharmacokineticRows(substance)) {
+    for (const field of fields) {
+      const value = positiveNumber(row?.[field]);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+}
+
+function baselineHalfLifeHours(substance = {}, fallback = 4) {
+  return positiveNumber(substance?.base_half_life)
+    ?? firstPkNumber(substance, ["half_life_hours", "half_life_hours_mean", "half_life_hours_upper"])
+    ?? fallback;
+}
+
+function baselineOnsetMinutes(substance = {}, fallback = 30) {
+  return positiveNumber(substance?.base_onset)
+    ?? firstPkNumber(substance, ["onset_minutes"])
+    ?? fallback;
+}
+
+function baselineDurationMinutes(substance = {}, fallback = 360) {
+  return positiveNumber(substance?.base_duration)
+    ?? firstPkNumber(substance, ["duration_minutes"])
+    ?? fallback;
 }
 
 async function fetchRemoteDoseRulesForIds(ids = []) {
@@ -1439,7 +1523,7 @@ function primaryRemoteDrugEffect(substance = {}) {
 
 function remotePkSummary(substance = {}) {
   const rows = normalizeRemoteList(substance.remote_evidence?.pharmacokinetics);
-  const halfLife = substance.base_half_life || rows.find((row) => row.half_life_hours !== null && row.half_life_hours !== undefined)?.half_life_hours;
+  const halfLife = baselineHalfLifeHours(substance, null);
   const parts = [];
   if (halfLife) parts.push(`\u534a\u8870\u671f ${Number(halfLife).toFixed(1)}h`);
   const clearance = rows.find((row) => row.clearance)?.clearance;
@@ -1482,9 +1566,12 @@ function formatCypTag(tag) {
 
 function pkSummary(substance = {}) {
   const parts = [];
-  if (substance.base_half_life) parts.push(`\u534a\u8870\u671f ${Number(substance.base_half_life).toFixed(1)}h`);
-  if (substance.base_onset) parts.push(`\u8d77\u6548 ${formatNumber(substance.base_onset, 0)}min`);
-  if (substance.base_duration) parts.push(`\u6301\u7eed ${formatNumber(substance.base_duration, 0)}min`);
+  const halfLife = baselineHalfLifeHours(substance, null);
+  const onset = baselineOnsetMinutes(substance, null);
+  const duration = baselineDurationMinutes(substance, null);
+  if (halfLife) parts.push(`\u534a\u8870\u671f ${Number(halfLife).toFixed(1)}h`);
+  if (onset) parts.push(`\u8d77\u6548 ${formatNumber(onset, 0)}min`);
+  if (duration) parts.push(`\u6301\u7eed ${formatNumber(duration, 0)}min`);
   const remotePk = remotePkSummary(substance);
   if (remotePk && !parts.join(" ").includes(remotePk)) parts.push(remotePk);
   return parts.join(" \u00b7 ");
@@ -1768,7 +1855,7 @@ function activeEntries(now = Date.now()) {
   return state.journal.filter((entry) => {
     const substance = state.substanceById.get(entry.substanceId);
     const params = adjustedPkParams(entry, substance);
-    const activeWindow = Math.max((params.adjustedHalfLifeHours || 4) * 6 * 60, Number(substance?.base_duration || 360), 60);
+    const activeWindow = Math.max((params.adjustedHalfLifeHours || 4) * 6 * 60, baselineDurationMinutes(substance, 360), 60);
     const ageMinutes = minutesBetween(entry.timestamp, now);
     return ageMinutes <= activeWindow && entry.timestamp <= now + 5 * 60000 && entryHasMeaningfulExposure(entry, now, 24);
   });
@@ -1910,8 +1997,8 @@ function evaluateDoseRisks() {
           name_zh: "乙醇",
           name_en: "Ethanol",
           category: "Depressant",
-          base_onset: row.substance?.base_onset || 30,
-          base_half_life: row.substance?.base_half_life || 4,
+          base_onset: baselineOnsetMinutes(row.substance, 30),
+          base_half_life: baselineHalfLifeHours(row.substance, 4),
         };
         const params = adjustedPkParams(ethanolEntry, ethanolSubstance);
         const tHours = minutesBetween(row.entry.timestamp, now) / 60;
@@ -2400,7 +2487,7 @@ function adjustedPkParams(entry, substance = {}) {
   const lbmKg = weightKg * (1 - profile.bodyFatPct / 100);
   const fatMassKg = Math.max(weightKg - lbmKg, 0);
   const totalBodyWaterLiters = Math.max(12, lbmKg * 0.73 + fatMassKg * 0.1);
-  const baseHalfLifeHours = Math.max(Number(substance?.base_half_life || 4), 0.25);
+  const baseHalfLifeHours = Math.max(baselineHalfLifeHours(substance, 4), 0.25);
   const isEthanol = isEthanolSubstance(substance);
   const isLipophilic = isLipophilicSubstance(substance);
   const weights = dispositionWeights(substance, isLipophilic);
@@ -2432,7 +2519,7 @@ function adjustedPkParams(entry, substance = {}) {
   const adjustedHalfLifeHours = Math.log(2) / kePerHour;
 
   const absorption = absorptionCovariates(entry, substance, profile, isLipophilic);
-  const onset = Math.max(Number(substance?.base_onset || 30), 1);
+  const onset = Math.max(baselineOnsetMinutes(substance, 30), 1);
   const kaPerHour = route.instant ? null : (Math.log(2) / Math.max(onset / 60, 0.15)) * absorption.absorptionFactor;
   const firstPassFactor = entry.route === "Oral" && weights.hepaticWeight > 0.5 ? clampFactor(1 + (1 - hepaticFactor) * 0.25, 1, 1.25) : 1;
   const bioavailabilityFactor = clampFactor(absorption.bioavailabilityFactor * firstPassFactor, 0.02, 2.2);
@@ -3037,7 +3124,10 @@ function substanceCard(substance) {
   const aliases = substance.identifiers?.aliases ? `别名：${substance.identifiers.aliases}` : "";
   const remoteBadge = substance.remote_source ? `<span class="remote-badge">\u8fdc\u7a0b\u6e90</span>` : "";
   const category = categoryLabel(substance.category);
-  const pk = `半衰期 ${substance.base_half_life ? `${Number(substance.base_half_life).toFixed(2)}h` : "未知"} · 起效 ${substance.base_onset || "未知"}min · 持续 ${substance.base_duration || "未知"}min`;
+  const halfLife = baselineHalfLifeHours(substance, null);
+  const onset = baselineOnsetMinutes(substance, null);
+  const duration = baselineDurationMinutes(substance, null);
+  const pk = `半衰期 ${halfLife ? `${Number(halfLife).toFixed(2)}h` : "未知"} · 起效 ${onset || "未知"}min · 持续 ${duration || "未知"}min`;
   card.innerHTML = `
     <header>
       <div class="card-title">${escapeHtml(substanceLabel(substance))}${remoteBadge}</div>
@@ -3727,12 +3817,3 @@ boot().catch((error) => {
   console.error(error);
   $("datasetMeta").textContent = "\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5148\u8fd0\u884c ETL import-ddinter \u751f\u6210 build \u6570\u636e\u3002";
 });
-
-
-
-
-
-
-
-
-

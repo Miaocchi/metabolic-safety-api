@@ -1,9 +1,26 @@
+/**
+ * @module lib/api
+ *
+ * API client — IO layer for fetching static API data and local backend.
+ *
+ * NOTE: The repository layer (`repositories/`) and service layer (`services/`)
+ * provide the canonical abstraction for data access. New code should prefer
+ * injecting repository/service instances rather than importing ApiClient directly.
+ * This module remains the backing implementation for backward compatibility.
+ */
 import type {
+  AdverseSignalRow,
   ApiManifest,
   DoseRule,
   EvidenceTextRow,
+  FoodInteractionRow,
   InteractionRow,
+  InteractionSignalRow,
+  LabelSectionRow,
   LocalSeedPayload,
+  PharmacokineticRow,
+  PgxRow,
+  SafetyWarningRow,
   SearchManifest,
   SubstanceBundle,
   SubstanceDetail,
@@ -54,18 +71,25 @@ export class ApiClient {
   async fetchBundle(item: SubstanceSummary) {
     const detail = await this.fetchJson<SubstanceDetail>(item.paths?.substance || item.paths?.["substance"] || "");
     const paths = { ...(item.paths || {}), ...(detail.paths || {}) };
-    const [interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations] =
+    const [interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations, labelSections, safetyWarnings, interactionSignals, foodInteractions, adverseSignalsRows, pgx] =
       await Promise.all([
         this.safeFetch<InteractionRow>(paths.interactions),
         this.safeFetch<DoseRule>(paths.dose_rules),
         this.safeFetch<EvidenceTextRow>(paths.dose_candidates),
         this.safeFetch<EvidenceTextRow>(paths.overdose_warnings),
         this.safeFetch<EvidenceTextRow>(paths.drug_effects),
-        this.safeFetch<EvidenceTextRow>(paths.pharmacokinetics),
+        this.safeFetch<PharmacokineticRow>(paths.pharmacokinetics),
         this.safeFetch<EvidenceTextRow>(paths.enzyme_relations),
+        this.safeFetch<LabelSectionRow>(paths.label_sections),
+        this.safeFetch<SafetyWarningRow>(paths.safety_warnings),
+        this.safeFetch<InteractionSignalRow>(paths.interaction_signals),
+        this.safeFetch<FoodInteractionRow>(paths.food_interactions),
+        this.safeFetch<AdverseSignalRow>(paths.adverse_signals),
+        this.safeFetch<PgxRow>(paths.pgx),
       ]);
+    const mergedDetail = mergePharmacokineticsIntoDetail(detail, pharmacokinetics);
     return {
-      detail,
+      detail: mergedDetail,
       interactions,
       doseRules,
       doseCandidates,
@@ -73,6 +97,12 @@ export class ApiClient {
       drugEffects,
       pharmacokinetics,
       enzymeRelations,
+      labelSections,
+      safetyWarnings,
+      interactionSignals,
+      foodInteractions,
+      adverseSignals: adverseSignalsRows,
+      pgx,
       fetchedAt: Date.now(),
     } satisfies SubstanceBundle;
   }
@@ -260,4 +290,76 @@ export class ApiClient {
       throw error;
     }
   }
+}
+
+function finitePositiveNumber(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+function firstPkNumber(row: PharmacokineticRow, fields: Array<keyof PharmacokineticRow>) {
+  for (const field of fields) {
+    const value = finitePositiveNumber(row[field]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function mergePharmacokineticsIntoDetail(detail: SubstanceDetail, pharmacokinetics: PharmacokineticRow[]) {
+  const rows = mergePkRows(
+    normalizePkRows(detail.pharmacokinetics),
+    normalizePkRows(detail.pharmacokinetics_detail),
+    normalizePkRows(detail.remote_evidence?.pharmacokinetics),
+    normalizePkRows(pharmacokinetics),
+  );
+  const halfLife = finitePositiveNumber(detail.base_half_life)
+    ?? firstPkNumberFromRows(rows, ["half_life_hours", "half_life_hours_mean", "half_life_hours_upper"]);
+  const onset = finitePositiveNumber(detail.base_onset) ?? firstPkNumberFromRows(rows, ["onset_minutes"]);
+  const duration = finitePositiveNumber(detail.base_duration) ?? firstPkNumberFromRows(rows, ["duration_minutes"]);
+  return {
+    ...detail,
+    base_half_life: halfLife ?? detail.base_half_life,
+    base_onset: onset ?? detail.base_onset,
+    base_duration: duration ?? detail.base_duration,
+    pharmacokinetics: rows.length ? rows : detail.pharmacokinetics,
+    remote_evidence: {
+      ...(detail.remote_evidence || {}),
+      pharmacokinetics: rows.length ? rows : detail.remote_evidence?.pharmacokinetics,
+    },
+  } satisfies SubstanceDetail;
+}
+
+function normalizePkRows(rows: unknown): PharmacokineticRow[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row): row is PharmacokineticRow => Boolean(row && typeof row === "object"));
+}
+
+function mergePkRows(...groups: PharmacokineticRow[][]) {
+  const rows: PharmacokineticRow[] = [];
+  const seen = new Set<string>();
+  for (const row of groups.flat()) {
+    const key = [
+      row.fact_id,
+      row.source_name,
+      row.standard_type,
+      row.route,
+      row.half_life_hours,
+      row.half_life_hours_mean,
+      row.half_life_hours_upper,
+      row.onset_minutes,
+      row.duration_minutes,
+    ].map((part) => String(part ?? "")).join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function firstPkNumberFromRows(rows: PharmacokineticRow[], fields: Array<keyof PharmacokineticRow>) {
+  for (const row of rows) {
+    const value = firstPkNumber(row, fields);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
