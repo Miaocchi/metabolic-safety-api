@@ -686,6 +686,135 @@ function updateKpis() {
   if ($("sourceKpi")) $("sourceKpi").textContent = String(sources);
 }
 
+function pmiRiskKey(risk = {}) {
+  return [
+    risk.interaction_id,
+    risk.rule_id,
+    risk.signal_id,
+    risk.risk_kind,
+    risk.interaction_type,
+    risk.substance_a_id,
+    risk.substance_b_id,
+    risk.substance_id,
+    risk.risk_level,
+  ].filter(Boolean).join("|") || JSON.stringify(risk).slice(0, 120);
+}
+
+function normalizePmiSubstanceKey(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_\-./()[\]{}]+/g, "")
+    .replace(/[·•]/g, "");
+}
+
+function pmiSubstanceKey(entry = {}, substance = {}) {
+  const display = substance.name_zh || substance.name_en || entry.substanceName || entry.substanceSnapshot?.name_zh || entry.substanceSnapshot?.name_en;
+  return normalizePmiSubstanceKey(display) || String(entry.substanceId || substance.id || "").toLowerCase();
+}
+function pmiRiskScore(risks = []) {
+  const deduped = new Map();
+  for (const risk of risks || []) {
+    const score = Math.max(0, riskSortValue(risk.risk_level));
+    if (!score) continue;
+    const key = pmiRiskKey(risk);
+    if (!deduped.has(key) || score > deduped.get(key)) deduped.set(key, score);
+  }
+  const scores = [...deduped.values()].sort((a, b) => b - a);
+  const weighted = scores.reduce((sum, score, index) => sum + score * Math.pow(0.58, index), 0);
+  const severeBonus = scores.some((score) => score >= 5) ? 5 : scores.some((score) => score >= 4) ? 2 : 0;
+  return Math.min(34, weighted * 4.2 + severeBonus);
+}
+
+function pmiEntryRows(entries = [], now = Date.now()) {
+  return entries.map((entry) => {
+    const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
+    const params = adjustedPkParams(entry, substance);
+    const elapsedHours = minutesBetween(entry.timestamp, now) / 60;
+    const exposure = elapsedHours < 0 ? 0 : concentrationAt(elapsedHours, Number(entry.dosage || 0), params);
+    const metrics = exposureMetricsForEntry(entry, params);
+    const halfLifeRatio = params.adjustedHalfLifeHours / Math.max(params.baseHalfLifeHours || 1, 1);
+    return {
+      id: pmiSubstanceKey(entry, substance),
+      name: substanceName(entry.substanceId),
+      exposure,
+      cmax: metrics.cmax,
+      halfLife: params.adjustedHalfLifeHours,
+      halfLifeRatio,
+      sleepDebtHours: params.profile.sleepDebtHours || 0,
+      coreTempC: params.profile.coreTempC || 37,
+      warnings: params.warnings || [],
+    };
+  }).sort((a, b) => b.exposure - a.exposure);
+}
+
+function pmiGroupedRows(rows = []) {
+  const bySubstance = new Map();
+  for (const row of rows) {
+    const group = bySubstance.get(row.id) || {
+      ...row,
+      exposure: 0,
+      cmax: 0,
+      halfLife: row.halfLife || 0,
+      count: 0,
+    };
+    group.exposure += Math.max(0, row.exposure || 0);
+    group.cmax = Math.max(group.cmax, row.cmax || 0);
+    group.halfLife = Math.max(group.halfLife || 0, row.halfLife || 0);
+    group.halfLifeRatio = Math.max(group.halfLifeRatio || 1, row.halfLifeRatio || 1);
+    group.count += 1;
+    bySubstance.set(row.id, group);
+  }
+  return [...bySubstance.values()].sort((a, b) => b.exposure - a.exposure);
+}
+function pmiExposureScore(rows = []) {
+  const bySubstance = new Map();
+  for (const row of rows) {
+    const group = bySubstance.get(row.id) || { current: 0, peak: 0, count: 0 };
+    group.current += Math.max(0, row.exposure || 0);
+    group.peak = Math.max(group.peak, row.cmax || 0);
+    group.count += 1;
+    bySubstance.set(row.id, group);
+  }
+  const groups = [...bySubstance.values()];
+  const totalCurrent = groups.reduce((sum, group) => sum + group.current, 0);
+  const strongestCurrent = groups.reduce((max, group) => Math.max(max, group.current), 0);
+  const strongestPeak = groups.reduce((max, group) => Math.max(max, group.peak), 0);
+  const stackPenalty = Math.max(0, groups.length - 1) * 1.2 + Math.max(0, rows.length - groups.length) * 0.45;
+  const score = Math.log10(totalCurrent + 1) * 8
+    + Math.log10(strongestCurrent + 1) * 5
+    + Math.log10(strongestPeak + 1) * 3
+    + stackPenalty;
+  return Math.min(28, score);
+}
+
+function pmiModifierScore(rows = []) {
+  if (!rows.length) return 0;
+  const maxSleepDebt = Math.max(...rows.map((row) => row.sleepDebtHours || 0));
+  const maxTemp = Math.max(...rows.map((row) => row.coreTempC || 37));
+  const maxHalfLifeRatio = Math.max(...rows.map((row) => row.halfLifeRatio || 1));
+  const warningCount = rows.reduce((sum, row) => sum + row.warnings.length, 0);
+  const sleepScore = Math.min(7, maxSleepDebt * 0.45);
+  const tempScore = maxTemp >= 39 ? 5 : maxTemp >= 37.8 ? 3 : 0;
+  const halfLifeScore = Math.min(8, Math.max(0, maxHalfLifeRatio - 1) * 5);
+  const warningScore = Math.min(4, warningCount * 0.8);
+  return Math.min(18, sleepScore + tempScore + halfLifeScore + warningScore);
+}
+
+function pmiComplexityScore(rows = []) {
+  const substanceCount = new Set(rows.map((row) => row.id).filter(Boolean)).size;
+  const entryCount = rows.length;
+  return Math.min(10, Math.max(0, substanceCount - 1) * 1.7 + Math.max(0, entryCount - substanceCount) * 0.25);
+}
+
+function pmiForwardScore(forwardRows = []) {
+  if (!forwardRows.length) return 0;
+  const sorted = [...forwardRows].sort((a, b) => b.index - a.index);
+  const top = sorted[0]?.index || 0;
+  const blended = sorted.reduce((sum, row, index) => sum + row.index * Math.pow(0.5, index), 0);
+  return Math.min(18, top * 0.09 + blended * 0.05);
+}
+
 function renderPmi() {
   const target = $("pmiSummary");
   const meta = $("pmiScoreMeta");
@@ -698,52 +827,46 @@ function renderPmi() {
     return;
   }
   const now = Date.now();
-  const riskScore = Math.min(40, (state.activeRisks || []).reduce((sum, risk) => sum + Math.max(0, riskSortValue(risk.risk_level)), 0) * 6);
-  let exposureScore = 0;
-  let modifierScore = 0;
-  let totalExposure = 0;
-  const rows = entries.map((entry) => {
-    const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
-    const params = adjustedPkParams(entry, substance);
-    const elapsedHours = minutesBetween(entry.timestamp, now) / 60;
-    const exposure = elapsedHours < 0 ? 0 : concentrationAt(elapsedHours, Number(entry.dosage || 0), params);
-    const metrics = exposureMetricsForEntry(entry, params);
-    totalExposure += exposure;
-    exposureScore += Math.min(16, exposure > 0 ? Math.log10(exposure + 1) * 7 : 0);
-    modifierScore += Math.max(0, (params.profile.sleepDebtHours || 0) * 0.8);
-    modifierScore += params.profile.coreTempC >= 39 ? 7 : params.profile.coreTempC >= 37.8 ? 4 : 0;
-    modifierScore += Math.max(0, (params.adjustedHalfLifeHours / Math.max(params.baseHalfLifeHours || 1, 1) - 1) * 8);
-    return {
-      name: substanceName(entry.substanceId),
-      exposure,
-      cmax: metrics.cmax,
-      halfLife: params.adjustedHalfLifeHours,
-      warnings: params.warnings || [],
-    };
-  }).sort((a, b) => b.exposure - a.exposure);
-  const pmi = Math.max(0, Math.min(100, Math.round(18 + riskScore + exposureScore + modifierScore)));
-  const level = pmi >= 75 ? "\u9ad8\u8d1f\u8377" : pmi >= 50 ? "\u4e2d\u8d1f\u8377" : "\u4f4e\u8d1f\u8377";
-  target.className = `pmi-summary level-${pmi >= 75 ? "high" : pmi >= 50 ? "medium" : "low"}`;
+  const meaningfulEntries = meaningfulExposureEntries(entries, now, 24);
+  if (!meaningfulEntries.length) {
+    target.className = "pmi-summary empty";
+    target.textContent = "当前活跃摄入的模型暴露已接近清零。";
+    if (meta) meta.textContent = "0/100 · 低负荷";
+    return;
+  }
+  const rows = pmiEntryRows(meaningfulEntries, now);
+  const groupedRows = pmiGroupedRows(rows);
+  const totalExposure = groupedRows.reduce((sum, row) => sum + row.exposure, 0);
+  const riskScore = pmiRiskScore(state.activeRisks || []);
+  const exposureScore = pmiExposureScore(rows);
+  const modifierScore = pmiModifierScore(rows);
+  const complexityScore = pmiComplexityScore(rows);
+  const forwardRowsAll = forwardExposureGroups(meaningfulEntries, now, 24);
+  const forwardRows = forwardRowsAll.slice(0, state.advancedMode ? 5 : 3);
+  const forwardIndex = forwardRowsAll.length ? Math.min(100, Math.round(forwardRowsAll.reduce((sum, row) => sum + row.index, 0) / Math.sqrt(forwardRowsAll.length))) : 0;
+  const forwardScore = pmiForwardScore(forwardRowsAll);
+  const pmi = Math.max(0, Math.min(100, Math.round(10 + riskScore + exposureScore + modifierScore + complexityScore + forwardScore)));
+  const level = pmi >= 80 ? "\u9ad8\u8d1f\u8377" : pmi >= 55 ? "\u4e2d\u8d1f\u8377" : "\u4f4e\u8d1f\u8377";
+  target.className = `pmi-summary level-${pmi >= 80 ? "high" : pmi >= 55 ? "medium" : "low"}`;
   if (meta) meta.textContent = `${pmi}/100 \u00b7 ${level}`;
-  const topRows = rows.slice(0, 4).map((row) => `
+  const substanceCount = groupedRows.length;
+  const topRows = groupedRows.slice(0, 4).map((row) => `
     <div class="pmi-row">
       <span>${escapeHtml(row.name)}</span>
       <strong>${formatNumber(row.exposure, 3)}</strong>
-      <small>t1/2 ${row.halfLife.toFixed(1)}h \u00b7 Cmax ${formatNumber(row.cmax, 3)}</small>
+      <small>${row.count > 1 ? `×${row.count} \u00b7 ` : ""}t1/2 ${row.halfLife.toFixed(1)}h \u00b7 Cmax ${formatNumber(row.cmax, 3)}</small>
     </div>`).join("");
-  const warningCount = rows.reduce((sum, row) => sum + row.warnings.length, 0);
-  const forwardRows = forwardExposureGroups(entries, now, 24).slice(0, state.advancedMode ? 5 : 3);
-  const forwardIndex = forwardRows.length ? Math.min(100, Math.round(forwardRows.reduce((sum, row) => sum + row.index, 0) / Math.sqrt(forwardRows.length))) : 0;
   target.innerHTML = `
     <div class="pmi-gauge">
       <div class="pmi-score">${pmi}</div>
-      <div><strong>${level}</strong><span>\u603b\u66b4\u9732 ${formatNumber(totalExposure, 3)} \u00b7 \u5411\u540e\u66b4\u9732\u6307\u6570 ${forwardIndex}/100 \u00b7 \u6d3b\u8dc3 ${entries.length} \u9879</span></div>
+      <div><strong>${level}</strong><span>\u603b\u66b4\u9732 ${formatNumber(totalExposure, 3)} \u00b7 \u5411\u540e\u66b4\u9732\u6307\u6570 ${forwardIndex}/100 \u00b7 \u6d3b\u8dc3 ${meaningfulEntries.length} \u9879 / ${substanceCount} \u79cd</span></div>
     </div>
-    <div class="pmi-bars">
+    <div class="pmi-bars pmi-bars-detailed">
       <div><span>\u51b2\u7a81/\u8fc7\u91cf</span><strong>${Math.round(riskScore)}</strong></div>
-      <div><span>\u6a21\u578b\u66b4\u9732</span><strong>${Math.round(exposureScore)}</strong></div>
-      <div><span>\u4e2a\u4f53\u4fee\u6b63</span><strong>${Math.round(modifierScore)}</strong></div>
-      <div><span>\u5411\u540e\u66b4\u9732</span><strong>${forwardIndex}</strong></div>
+      <div><span>\u5f53\u524d\u66b4\u9732</span><strong>${Math.round(exposureScore)}</strong></div>
+      <div><span>\u672a\u6765\u66b4\u9732</span><strong>${Math.round(forwardScore)}</strong></div>
+      <div><span>\u4e2a\u4f53\u8106\u5f31\u6027</span><strong>${Math.round(modifierScore)}</strong></div>
+      <div><span>\u7528\u836f\u590d\u6742\u5ea6</span><strong>${Math.round(complexityScore)}</strong></div>
     </div>
     <div class="pmi-table">${topRows}</div>
     <div class="pmi-forward">
@@ -752,7 +875,6 @@ function renderPmi() {
     </div>
   `;
 }
-
 
 function concentrationUnitLabel(entry = {}) {
   const unit = String(entry?.unit || "mg").toLowerCase();
@@ -787,10 +909,37 @@ function forwardExposureMetricsForEntry(entry, params, now = Date.now(), horizon
     peak,
     minutesToPeak: tPeak * 60,
     halfLifeHours: params.adjustedHalfLifeHours || 0,
+    horizonHours,
     unit: concentrationUnitLabel(entry),
   };
 }
 
+function exposureIsMeaningful(metrics = {}, referenceCmax = 0, floor = 0.0005, relativeFloor = 0.01) {
+  if (!metrics) return false;
+  const horizonHours = Math.max(1, Number(metrics.horizonHours || 24));
+  const averageForward = Number(metrics.auc24 || 0) / horizonHours;
+  const level = Math.max(Number(metrics.current || 0), Number(metrics.peak || 0), averageForward);
+  const reference = Number(referenceCmax || metrics.cmax || 0);
+  const threshold = Math.max(floor, Number.isFinite(reference) && reference > 0 ? reference * relativeFloor : 0);
+  return level > threshold;
+}
+
+function exposureReferenceCmax(entry, params, horizonHours = 24) {
+  const metrics = exposureMetricsForEntry(entry, params, Math.max(24, horizonHours));
+  return Number(metrics?.cmax || 0);
+}
+
+function entryHasMeaningfulExposure(entry, now = Date.now(), horizonHours = 24) {
+  const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
+  const params = adjustedPkParams(entry, substance);
+  const metrics = forwardExposureMetricsForEntry(entry, params, now, horizonHours);
+  if (!metrics) return false;
+  return exposureIsMeaningful(metrics, exposureReferenceCmax(entry, params, horizonHours));
+}
+
+function meaningfulExposureEntries(entries, now = Date.now(), horizonHours = 24) {
+  return entries.filter((entry) => entryHasMeaningfulExposure(entry, now, horizonHours));
+}
 function forwardExposureIndex(auc24, peak, minutesToPeak, halfLifeHours) {
   const aucScore = Math.min(62, Math.log10(Math.max(auc24, 0) + 1) * 30);
   const peakScore = Math.min(26, Math.log10(Math.max(peak, 0) + 1) * 16);
@@ -805,9 +954,10 @@ function forwardExposureGroups(entries = activeEntries(), now = Date.now(), hori
     const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
     const params = adjustedPkParams(entry, substance);
     const metrics = forwardExposureMetricsForEntry(entry, params, now, horizonHours);
-    if (!metrics) return;
-    const group = bySubstance.get(entry.substanceId) || {
-      id: entry.substanceId,
+    if (!metrics || !exposureIsMeaningful(metrics, exposureReferenceCmax(entry, params, horizonHours))) return;
+    const key = pmiSubstanceKey(entry, substance);
+    const group = bySubstance.get(key) || {
+      id: key,
       name: substanceName(entry.substanceId),
       auc24: 0,
       current: 0,
@@ -826,7 +976,7 @@ function forwardExposureGroups(entries = activeEntries(), now = Date.now(), hori
     group.halfLifeHours = Math.max(group.halfLifeHours, metrics.halfLifeHours);
     group.count += 1;
     group.unitSet.add(metrics.unit);
-    bySubstance.set(entry.substanceId, group);
+    bySubstance.set(key, group);
   });
   return [...bySubstance.values()].map((group) => {
     const unit = group.unitSet.size === 1 ? [...group.unitSet][0] : "mixed";
@@ -948,6 +1098,35 @@ function forecastWarningItem(forecast) {
   };
 }
 
+function signalReportStats(risk = {}) {
+  const counts = (Array.isArray(risk.reactions) ? risk.reactions : [])
+    .map((item) => Number(item?.count || 0))
+    .filter((count) => Number.isFinite(count) && count > 0);
+  return {
+    total: counts.reduce((sum, count) => sum + count, 0),
+    max: counts.length ? Math.max(...counts) : 0,
+  };
+}
+
+function isLowSampleSignalRisk(risk = {}) {
+  if (risk.risk_kind !== "signal") return false;
+  const { total, max } = signalReportStats(risk);
+  if (!max) return false;
+  return max < 20 && total < 50;
+}
+
+function signalYellowWarningItem(risk = {}) {
+  const { total, max } = signalReportStats(risk);
+  const countText = total ? `最高单项 ${max} 例 / 合计 ${total} 例` : "报告数较少";
+  return {
+    subject: riskSubjectText(risk),
+    level: "Moderate",
+    levelText: "黄色预警",
+    meta: "低样本候选信号",
+    note: `FAERS 自发报告样本数较小（${countText}），按候选信号观察；不代表因果关系、发生率或确认联用冲突。`,
+  };
+}
+
 function groupedWarningItems(items = []) {
   const bySubject = new Map();
   items.forEach((item) => {
@@ -1008,7 +1187,7 @@ function renderPeakForecastPanel(items = []) {
   return `
     <section class="peak-forecast-panel">
       <div class="peak-forecast-title">
-        <strong>\u672a\u6765\u5cf0\u503c\u89c2\u5bdf</strong>
+        <strong>黄色预警观察</strong>
         <span>${items.length} \u9879</span>
       </div>
       <div class="peak-forecast-list">${rows}</div>
@@ -1069,14 +1248,15 @@ function renderSideEffectWarning() {
   if (!target) return;
   const risks = state.activeRisks || [];
   const visibleRiskItems = riskItemsForMode(risks);
-  const highRisks = visibleRiskItems.filter((risk) => riskSortValue(risk.risk_level) >= 3);
+  const yellowSignalItems = visibleRiskItems.filter(isLowSampleSignalRisk).map(signalYellowWarningItem);
+  const highRisks = visibleRiskItems.filter((risk) => riskSortValue(risk.risk_level) >= 3 && !isLowSampleSignalRisk(risk));
   const summaryLimit = state.advancedMode ? 2 : 2;
   const summaryRisks = highRisks.slice(0, summaryLimit);
   const hiddenRiskCount = Math.max(0, highRisks.length - summaryRisks.length);
   const forecastWarnings = exposureForecasts(activeEntries())
     .slice(0, state.advancedMode ? 4 : 2)
     .map(forecastWarningItem);
-  renderPeakForecastWarning(forecastWarnings);
+  renderPeakForecastWarning([...yellowSignalItems, ...forecastWarnings]);
   const modelWarnings = activeEntries().flatMap((entry) => {
     const substance = state.substanceById.get(entry.substanceId) || { id: entry.substanceId };
     const params = adjustedPkParams(entry, substance);
@@ -1584,12 +1764,13 @@ function clampNumber(value, fallback, min, max) {
   return Math.min(Math.max(num, min), max);
 }
 
-function activeEntries() {
+function activeEntries(now = Date.now()) {
   return state.journal.filter((entry) => {
     const substance = state.substanceById.get(entry.substanceId);
     const params = adjustedPkParams(entry, substance);
     const activeWindow = Math.max((params.adjustedHalfLifeHours || 4) * 6 * 60, Number(substance?.base_duration || 360), 60);
-    return minutesSince(entry.timestamp) <= activeWindow;
+    const ageMinutes = minutesBetween(entry.timestamp, now);
+    return ageMinutes <= activeWindow && entry.timestamp <= now + 5 * 60000 && entryHasMeaningfulExposure(entry, now, 24);
   });
 }
 
@@ -1690,6 +1871,7 @@ function evaluateDoseRisks() {
       if (!doseRuleMatches(rule, substance)) continue;
       if (!doseRouteMatches(entry, rule)) continue;
       if (!entry.timestamp || entry.timestamp > now) continue;
+      if (!entryHasMeaningfulExposure(entry, now, Math.max(windowHours, 24))) continue;
       const ageHours = (now - entry.timestamp) / 3600000;
       if (ageHours > windowHours) continue;
       const amount = doseAmountForRule(entry, rule);
@@ -2700,7 +2882,7 @@ function drawCurve() {
       ctx.arc(markerX, markerY, 6 * dpr, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-  
+
       const drugRows = visibleGroups
         .map((group) => ({ ...group, current: group.values[hoverIndex] || 0 }))
         .sort((a, b) => b.current - a.current)

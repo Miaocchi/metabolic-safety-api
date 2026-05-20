@@ -38,7 +38,7 @@ class ContentOverlayExportTests(unittest.TestCase):
                     "fact_id": "pk1",
                     "fact_type": "pharmacokinetics",
                     "subject_ids": ["sertraline"],
-                    "claim": {"half_life_hours": 26},
+                    "claim": {"half_life_hours": 26, "onset_minutes": 240, "duration_minutes": 1440, "standard_type": "T1/2"},
                     "source_name": "DailyMed",
                     "source_tier": "Regulatory",
                     "confidence": "Medium",
@@ -69,6 +69,11 @@ class ContentOverlayExportTests(unittest.TestCase):
             self.assertEqual(detail["pharmacokinetic_count"], 1)
             effects = json.loads((api / item["paths"]["drug_effects"]).read_text(encoding="utf-8"))
             self.assertEqual(effects[0]["target"], "SLC6A4")
+            pk_rows = json.loads((api / item["paths"]["pharmacokinetics"]).read_text(encoding="utf-8"))
+            self.assertEqual(pk_rows[0]["half_life_hours"], 26)
+            self.assertEqual(pk_rows[0]["onset_minutes"], 240)
+            self.assertEqual(pk_rows[0]["duration_minutes"], 1440)
+            self.assertEqual(pk_rows[0]["standard_type"], "T1/2")
 
 
 if __name__ == "__main__":

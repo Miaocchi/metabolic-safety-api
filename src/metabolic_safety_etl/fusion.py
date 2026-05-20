@@ -44,6 +44,8 @@ def _source_summary(facts: list[EvidenceFact]) -> list[dict[str, Any]]:
 def build_substances_core(facts: list[EvidenceFact], dataset_version: str) -> list[dict[str, Any]]:
     records: dict[str, dict[str, Any]] = {}
     supporting: dict[str, list[EvidenceFact]] = defaultdict(list)
+    pk_facts_by_subject: dict[str, list[EvidenceFact]] = defaultdict(list)
+    hl_best_score: dict[str, list[int]] = {}
 
     for fact in facts:
         if not fact.subject_ids:
@@ -63,6 +65,7 @@ def build_substances_core(facts: list[EvidenceFact], dataset_version: str) -> li
                 "cyp_tags": [],
                 "dataset_version": dataset_version,
             }
+            hl_best_score[subject_id] = [0]
 
         if fact.fact_type == "substance_identity":
             claim = fact.claim
@@ -74,8 +77,14 @@ def build_substances_core(facts: list[EvidenceFact], dataset_version: str) -> li
 
         if fact.fact_type == "pharmacokinetics":
             claim = fact.claim
+            pk_facts_by_subject[subject_id].append(fact)
             if claim.get("half_life_hours") is not None:
-                records[subject_id]["base_half_life"] = _numeric(claim["half_life_hours"])
+                records[subject_id]["base_half_life"] = _pick_best_half_life(
+                    records[subject_id]["base_half_life"],
+                    _numeric(claim["half_life_hours"]),
+                    fact,
+                    hl_best_score[subject_id],
+                )
             if claim.get("onset_minutes") is not None:
                 records[subject_id]["base_onset"] = _numeric(claim["onset_minutes"])
             if claim.get("duration_minutes") is not None:
@@ -91,6 +100,7 @@ def build_substances_core(facts: list[EvidenceFact], dataset_version: str) -> li
     out = []
     for subject_id, record in sorted(records.items()):
         record["source_summary"] = _source_summary(supporting.get(subject_id, []))
+        record["pharmacokinetics_detail"] = _build_pk_detail(pk_facts_by_subject.get(subject_id, []))
         out.append(record)
     return out
 
@@ -106,6 +116,62 @@ def _numeric(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _pick_best_half_life(current: float | None, candidate: float | None, fact: EvidenceFact, best_score: list[int] | None = None) -> float | None:
+    """Pick the best half-life value using source-tier and confidence.
+
+    Uses a composite score (tier_rank * 10 + confidence_rank) to prefer
+    higher-quality sources.  ``best_score`` is a mutable single-element list
+    that tracks the winning score across invocations for the same substance.
+    """
+    if candidate is None:
+        return current
+    if current is None:
+        if best_score is not None:
+            tier_rank = SOURCE_TIER_RANK.get(fact.source_tier, 0)
+            conf_rank = CONFIDENCE_RANK.get(fact.confidence, 0)
+            best_score[0] = tier_rank * 10 + conf_rank
+        return candidate
+    tier_rank = SOURCE_TIER_RANK.get(fact.source_tier, 0)
+    conf_rank = CONFIDENCE_RANK.get(fact.confidence, 0)
+    candidate_score = tier_rank * 10 + conf_rank
+    if best_score is not None and candidate_score > best_score[0]:
+        best_score[0] = candidate_score
+        return candidate
+    if best_score is None:
+        return candidate
+    return current
+
+
+def _build_pk_detail(pk_facts: list[EvidenceFact]) -> list[dict[str, Any]]:
+    """Build structured pharmacokinetics detail array from PK evidence facts."""
+    if not pk_facts:
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for fact in sorted(pk_facts, key=lambda f: (
+        -SOURCE_TIER_RANK.get(f.source_tier, 0),
+        -CONFIDENCE_RANK.get(f.confidence, 0),
+    )):
+        claim = fact.claim
+        hl = claim.get("half_life_hours")
+        dedupe_key = f"{hl}|{fact.source_name}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        row: dict[str, Any] = {
+            "half_life_hours": _numeric(hl),
+            "source_name": fact.source_name,
+            "source_tier": fact.source_tier,
+            "confidence": fact.confidence,
+        }
+        for key in ("half_life_hours_upper", "half_life_hours_mean", "onset_minutes", "duration_minutes",
+                     "bioavailability", "clearance", "volume_distribution", "route", "standard_type"):
+            if claim.get(key) is not None:
+                row[key] = claim[key]
+        rows.append(row)
+    return rows
 
 
 def merge_interactions(facts: list[EvidenceFact], dataset_version: str) -> list[dict[str, Any]]:

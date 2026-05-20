@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 node_modules/
+mobile_pwa/dist/
+mobile_pwa/coverage/
+mobile_pwa/previews/
+mobile_pwa/*-smoke.png
+*.tsbuildinfo
+*.pid
 
 # Local generated databases and logs
 build/

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import zipfile
 from typing import Any
@@ -152,6 +153,106 @@ def id_path(prefix: str, substance_id: str) -> str:
     digest = hashlib.sha256(str(substance_id).encode("utf-8")).hexdigest()[:20]
     return f"{prefix}/{digest[:2]}/{digest}.json"
 
+
+def compact_search_text(value: Any) -> str:
+    text = str(value or "").lower().strip()
+    return re.sub(r"[\s_\-./()[\]{}]+", "", text)
+
+
+def search_shard_key(value: Any) -> str:
+    text = compact_search_text(value)
+    if not text:
+        return "other"
+    char = text[0]
+    if char.isascii() and char.isalnum():
+        prefix = "".join(part for part in text if part.isascii() and part.isalnum())[:2]
+        return prefix or char
+    return f"u{ord(char):04x}"
+
+
+def primary_search_key(entry: dict[str, Any]) -> str:
+    return search_shard_key(entry.get("name_en") or entry.get("name_zh") or entry.get("id"))
+
+
+def write_search_shards(api_out_dir: Path, search_index: list[dict[str, Any]]) -> dict[str, Any]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in search_index:
+        keys = {
+            primary_search_key(row),
+            search_shard_key(row.get("id")),
+            search_shard_key(row.get("name_en")),
+            search_shard_key(row.get("name_zh")),
+        }
+        for alias in row.get("aliases") or []:
+            keys.add(search_shard_key(alias))
+        for key in sorted(key for key in keys if key):
+            buckets.setdefault(key, []).append(row)
+
+    shard_counts: dict[str, int] = {}
+    for key, rows in sorted(buckets.items()):
+        deduped = list({str(row.get("id")): row for row in rows if row.get("id")}.values())
+        deduped.sort(key=lambda item: ((item.get("name_zh") or item.get("name_en") or item.get("id") or "").lower(), item.get("id") or ""))
+        write_compact_json(api_out_dir / "search" / "shards" / f"{key}.json", deduped)
+        shard_counts[key] = len(deduped)
+
+    manifest = {
+        "items": len(search_index),
+        "policy": "Search UI should load shard files by query prefix instead of parsing the full search/index.json on page open.",
+        "shard_path": "search/shards/{key}.json",
+        "shards": shard_counts,
+    }
+    write_compact_json(api_out_dir / "search" / "manifest.json", manifest)
+    return manifest
+
+
+def write_adverse_signal_api(api_out_dir: Path, evidence_facts: list[dict[str, Any]], substances_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    severe = {"DEATH", "CARDIAC ARREST", "RESPIRATORY DEPRESSION", "COMA", "SEIZURE", "CONVULSION", "SEROTONIN SYNDROME"}
+    moderate_signal_min_count = 20
+    grouped: dict[str, dict[str, Any]] = {}
+    for fact in evidence_facts:
+        if fact.get("fact_type") != "adverse_event_signal":
+            continue
+        subject_ids = fact.get("subject_ids") or []
+        subject_id = str(subject_ids[0]) if subject_ids else ""
+        if not subject_id:
+            continue
+        substance = substances_by_id.get(subject_id)
+        claim = fact.get("claim") if isinstance(fact.get("claim"), dict) else {}
+        reaction = str(claim.get("reaction") or "").strip()
+        row = grouped.setdefault(
+            subject_id,
+            {
+                "risk_kind": "signal",
+                "signal_id": f"static_signal_{subject_id}",
+                "substance_id": subject_id,
+                "substance_name": substance_display_name(substance, subject_id),
+                "query_term": claim.get("query_term") or subject_id,
+                "reactions": [],
+                "risk_level": "Minor",
+                "confidence": fact.get("confidence") or "Low",
+                "source_tier": fact.get("source_tier") or "Signal",
+                "interaction_type": "adverse_event_signal",
+                "source_name": fact.get("source_name") or "openFDA FAERS adverse event",
+                "source_url": fact.get("source_url") or "https://open.fda.gov/apis/drug/event/",
+                "note": "静态库中的 FAERS 自发不良事件报告计数只提示药物警戒候选信号，不代表因果关系、发生率或确认联用冲突。",
+            },
+        )
+        if reaction:
+            row["reactions"].append({
+                "reaction": reaction,
+                "label": claim.get("reaction_label_zh") or reaction,
+                "count": int(claim.get("count") or 0),
+            })
+        reaction_count = int(claim.get("count") or 0)
+        if (reaction_count >= moderate_signal_min_count and str(fact.get("risk_level") or "").lower() == "moderate") or reaction.upper() in severe:
+            row["risk_level"] = "Moderate"
+
+    for subject_id, row in sorted(grouped.items()):
+        row["reactions"] = sorted(row.get("reactions") or [], key=lambda item: int(item.get("count") or 0), reverse=True)
+        write_compact_json(api_out_dir / "adverse_signals" / f"{subject_id}.json", row)
+    return {"path": "adverse_signals/{id}.json", "items": len(grouped)}
+
+
 def aliases_from_identifiers(identifiers: dict[str, Any] | None) -> list[str]:
     if not isinstance(identifiers, dict):
         return []
@@ -178,6 +279,7 @@ def compact_substance(row: dict[str, Any]) -> dict[str, Any]:
         "base_half_life": row.get("base_half_life"),
         "base_onset": row.get("base_onset"),
         "base_duration": row.get("base_duration"),
+        "pharmacokinetics": row.get("pharmacokinetics_detail") or [],
         "identifiers": identifiers,
         "aliases": aliases,
         "cyp_tags": row.get("cyp_tags") or [],
@@ -277,6 +379,7 @@ def export_static_api(input_dir: Path, out_dir: Path, reset: bool = True) -> dic
     search_index = [search_entry(row, paths_by_id[str(row.get("id"))]) for row in substances if row.get("id")]
     search_index.sort(key=lambda item: ((item.get("name_zh") or item.get("name_en") or item.get("id") or "").lower(), item.get("id") or ""))
     write_compact_json(out_dir / "search" / "index.json", search_index)
+    search_manifest = write_search_shards(out_dir, search_index)
 
     for substance_id, row in sorted(substances_by_id.items()):
         detail = compact_substance(row)
@@ -301,6 +404,7 @@ def export_static_api(input_dir: Path, out_dir: Path, reset: bool = True) -> dic
         "dose_rules": len(dose_rules),
     }
     source_library = write_source_library(out_dir, evidence_facts)
+    adverse_signals = write_adverse_signal_api(out_dir, evidence_facts, substances_by_id)
     full_package = write_full_package(input_dir, out_dir, seed_manifest, counts, source_library)
 
     manifest = {
@@ -310,10 +414,14 @@ def export_static_api(input_dir: Path, out_dir: Path, reset: bool = True) -> dic
         "counts": counts,
         "paths": {
             "search_index": "search/index.json",
+            "search_manifest": "search/manifest.json",
             "substance_by_id": "search index item paths.substance",
             "interactions_by_substance": "search index item paths.interactions",
             "dose_rules_by_substance": "search index item paths.dose_rules",
+            "adverse_signals": adverse_signals["path"],
         },
+        "search": search_manifest,
+        "adverse_signals": adverse_signals,
         "online_library": {
             "mode": "remote_static_fused_source_layers",
             "source_library": source_library,

@@ -165,8 +165,8 @@ High > Medium > Low > Unknown
 
 | 输出 | 用途 |
 | :--- | :--- |
-| `build/init_substances.json` | 移动端冷启动 substance 种子库 |
-| `build/init_interactions.json` | 移动端冷启动 interaction 种子库 |
+| `build/init_substances.json` | 移动端/桌面端可用的 substance 种子 JSON |
+| `build/init_interactions.json` | 移动端/桌面端可用的 interaction 种子 JSON |
 | `build/evidence_facts.json` | 溯源、调试、详情页证据 |
 | `build/app_seed.sqlite` | 桌面端快速检索和冲突检查 |
 | `build/manifest.json` | 数据集版本和数量统计 |
@@ -180,7 +180,7 @@ High > Medium > Low > Unknown
 - `interactions_core`
 - `evidence_facts`
 
-移动端 Room 可直接映射这三类表，并额外增加：
+移动端 PWA 当前使用 IndexedDB 缓存静态 API、journal、settings 和 profile。若后续做原生 Room/SQLite，可映射这三类表，并额外增加：
 
 - `substances_override`：用户自定义覆盖，不覆盖官方只读库。
 - `journal_entries`：摄入日志。
@@ -200,7 +200,7 @@ flowchart TD
   E --> H["evidence_facts.json"]
   E --> I["app_seed.sqlite"]
   I --> J["桌面端 API /api/seed /api/interactions /api/check"]
-  F --> K["移动端 Room 冷启动灌库"]
+  F --> K["移动端静态 API / IndexedDB 缓存"]
   G --> K
 ```
 
@@ -219,6 +219,8 @@ flowchart TD
 | 文件 | 作用 |
 | :--- | :--- |
 | `desktop_app/server.py` | 无第三方依赖 HTTP API 和静态文件服务 |
+| `desktop_app/config.py` | 路径、source 配置、ETL import 路径设置 |
+| `desktop_app/services/` | public source 同步、重建任务、job 状态、安全/path 校验 |
 | `desktop_app/static/index.html` | 单页 UI |
 | `desktop_app/static/app.js` | 搜索、日志、冲突检查、PopPK 曲线 |
 | `desktop_app/static/styles.css` | AMOLED 黑色 UI |
@@ -311,6 +313,15 @@ $p=Start-Process -FilePath $python -ArgumentList @('desktop_app\server.py','8765
 Set-Content build\desktop_server.pid $p.Id
 ```
 
+前台启动也支持：
+
+```powershell
+$env:PYTHONPATH="src"
+python desktop_app/server.py
+# 或
+python -m desktop_app.server
+```
+
 ### 8.3 停止桌面端
 
 ```powershell
@@ -323,7 +334,18 @@ Stop-Process -Id ([int](Get-Content build\desktop_server.pid)) -Force
 node --check desktop_app\static\app.js
 $env:PYTHONPATH="src"
 python -m unittest discover -s tests
+python -m unittest tests.test_static_api
 python -m compileall -q desktop_app src tests
+```
+
+移动端要求 Node >=20.19，聚焦测试示例：
+
+```powershell
+cd mobile_pwa
+npm test
+npm run build
+npx vitest run src/lib/api.test.ts
+npx vitest run src/domain/safety.test.ts src/services/risk-service.test.ts
 ```
 
 ### 8.5 查看数据源状态
@@ -335,7 +357,11 @@ python -m metabolic_safety_etl.cli sources --out build\source_status.json
 
 ## 9. 移动端落地方案
 
-### 9.1 Android 首选方案
+当前已落地 `mobile_pwa/`：React 19 + Vite 7 + TypeScript，目录包括 `src/pages/`、`src/components/`、`src/hooks/`、`src/repositories/`、`src/services/`、`src/domain/`、`src/lib/`、`src/types.ts` 和 `src/styles/`。PWA 使用 IndexedDB 保存静态 JSON 缓存、详情 bundle、journal、settings 和 profile；`App.tsx` 负责顶层 shell 和依赖装配。
+
+隐私边界：远程 GitHub/Cloudflare 静态 API 只用于 public seed/search/detail JSON 和离线包，不上传个人参数、摄入日志、剂量史、二维码迁移 payload 或本地风险推断。二维码/文本迁移 payload 含个人参数和日志，只用于用户主动复制/扫码/导入。实时 openFDA FAERS fallback 会把物质名/别名发往 openFDA，应保持用户可感知/可关闭，结果仅作为低可信候选信号。
+
+### 9.1 Android 原生备选方案
 
 | 层 | 方案 |
 | :--- | :--- |
@@ -372,7 +398,7 @@ python -m metabolic_safety_etl.cli sources --out build\source_status.json
 | P1 | FooDrugs 本地 SQL/CSV 适配器 | 补药食冲突长尾 |
 | P1 | PharmGKB/ClinPGx 下载包适配器 | 支撑 CYP2D6、CYP2C19 等个体化代谢 |
 | P1 | openFDA/DailyMed 标签段落结构化抽取 | 把监管文本变成可审查候选事实 |
-| P2 | 移动端 Room schema 和冷启动灌库 | 桌面验证稳定后迁移 |
+| P2 | 原生 Android Room schema 和冷启动灌库 | 仅在需要原生客户端时推进；当前移动端为 PWA + IndexedDB |
 | P2 | 本地备份和同步策略 | 支撑长期个人日志 |
 
 ## 11. 安全声明

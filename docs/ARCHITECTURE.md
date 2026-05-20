@@ -1,83 +1,199 @@
-﻿# 整体方案：电脑端先实现，验证后下放移动端
+﻿# Architecture
 
-## 1. 目标
+This repository is a local-first safety and evidence-fusion prototype. The computer-side ETL builds traceable seed data; the desktop server validates data and workflows; the mobile PWA consumes a static API and local IndexedDB cache for user logging, risk review, curve display, and evidence traceability.
 
-先在电脑端建立一个可重复运行的本地 ETL 与证据融合管线，把多源药物数据转换为移动端可离线灌入的种子库。移动端只承担记录、估算、提醒和溯源展示；复杂抓取、清洗、LLM 抽取和人工复核留在电脑端完成。
+The app is not a clinical decision support system. It must not present missing evidence as safety.
 
-## 2. 数据分层
-
-| 层级 | 数据源 | 用途 | 默认策略 |
-| --- | --- | --- | --- |
-| L1 监管标签层 | DailyMed SPL、openFDA labels、FDA CYP tables | 禁忌、警告、PK 段落、监管证据 | 可进入核心证据，但自然语言仍需抽取和审核 |
-| L2 标准本体层 | RxNorm/RxNav、UNII、ATC、PubChem、ChEMBL ID | 实体归一化、药名/NDC/RxCUI 映射 | 只做映射，不直接判断安全 |
-| L3 策展知识层 | DDInter、PharmGKB/ClinPGx、ChEMBL、DrugBank(授权后) | DDI/DFI、PK/PD、PGx、靶点通路 | 进入核心候选库，按证据等级融合 |
-| L4 信号发现层 | FAERS/openFDA event、OnSIDES、TwoSIDES、FooDrugs、文献挖掘 | 发现长尾风险和新信号 | 只能作为候选信号，不能直接拦截 |
-| L5 社区补盲层 | PsychonautWiki、TripSit 等 | 官方覆盖不足的物质/组合补盲 | 低可信度候选，不得覆盖高等级来源 |
-
-## 3. 中间事实模型
-
-所有来源先转换为 `EvidenceFact`，避免把来源格式直接写死进 App：
-
-```json
-{
-  "fact_type": "pharmacokinetics | enzyme_relation | drug_interaction | food_interaction | source_text",
-  "subject_ids": ["ibuprofen", "warfarin"],
-  "claim": {"mechanism": "..."},
-  "risk_level": "Contraindicated | Major | Moderate | Minor | NoKnownClinicalSignificance | Unknown",
-  "confidence": "High | Medium | Low | Unknown",
-  "source_tier": "Regulatory | Label | Guideline | CuratedDB | Literature | Signal | Community",
-  "source_name": "DailyMed",
-  "source_url": "...",
-  "evidence_quote": "...",
-  "extraction_method": "api | parser | llm | manual",
-  "review_status": "unreviewed | machine_checked | human_reviewed",
-  "use_policy": "core_rule | evidence_source | candidate_signal | mapping_only"
-}
-```
-
-## 4. 融合规则
-
-1. `Unknown` 单独处理，不能映射为无风险。
-2. 风险选择采用保守原则：同一组合存在多个已知风险时取最高风险。
-3. 高可信来源不能被社区或信号源降级。
-4. FAERS、TwoSIDES、FooDrugs、LLM 输出只生成候选事实，进入用户提醒前必须有审核状态。
-5. 每条移动端规则必须保留 `evidence_refs`，详情页可追溯到来源。
-6. 上游库更新时只替换官方核心表；用户自定义、历史日志和个人参数快照不被覆盖。
-
-## 5. 电脑端运行流
+## Repository map
 
 ```text
-source adapters -> raw facts -> normalized EvidenceFact -> fusion -> mobile seed JSON + SQLite
+src/metabolic_safety_etl/   Python ETL, source adapters, schema, fusion, static API export
+desktop_app/                Local no-dependency HTTP server and browser test UI
+mobile_pwa/                 React 19 + Vite 7 + TypeScript mobile/PWA client
+mobile_pwa/src/pages/       Search, Journal, Risks, Curve, Settings pages
+mobile_pwa/src/services/    PWA application use cases
+mobile_pwa/src/repositories/ IndexedDB/static API persistence interfaces
+mobile_pwa/src/domain/      Pure safety/risk rules and tests
+android/                    Capacitor Android wrapper for mobile_pwa/dist
+docs/                       Static API, Pages deployment, and architecture docs
+data/                       Raw and optional source inputs/caches
+build/                      Generated local seed JSON/SQLite outputs
+public/api/                 Generated static JSON API for remote/bundled client use
 ```
 
-当前原型已实现：
+Generated outputs (`build/`, `public/api/`) are products of ETL commands and should not be hand-edited except for an explicit artifact hotfix.
 
-- `fetch-openfda`：抓取 openFDA 标签段落，生成监管来源事实。
-- `fetch-psychonautwiki`：抓取社区 ROA/duration 候选事实。
-- `build/demo`：融合事实并导出移动端种子库。
-- `app_seed.sqlite`：用于桌面检查和未来 Room schema 对照。
+## Data and evidence architecture
 
-## 6. 移动端落地方式
+All source adapters should convert upstream data into `EvidenceFact`-style records before fusion. This prevents app code from depending on source-specific formats and makes every user-facing rule traceable.
 
-Android 首版建议：
+```text
+source adapters -> raw facts -> normalized EvidenceFact -> fusion -> seed JSON + app_seed.sqlite -> static API/PWA cache
+```
 
-- `Room`：导入 `substances_core`、`interactions_core`、`evidence_facts`。
-- `SQLCipher`：加密用户日志库。
-- `DataStore`：保存用户偏好和风险显示阈值。
-- `Compose Canvas`：只绘制估算曲线，不显示“安全”结论。
-- 历史日志写入时保存 `profile_snapshot` 和 `substance_param_snapshot`。
+Source tiers and default policies:
 
-PWA 首版建议：
+| Layer | Examples | Purpose | Default policy |
+| --- | --- | --- | --- |
+| Regulatory/label | DailyMed SPL, openFDA labels, FDA tables | Warnings, contraindications, PK/PD label text | Can be evidence; natural language still needs extraction/review before it becomes a rule |
+| Ontology/mapping | RxNorm/RxNav, UNII, ATC, ChEMBL IDs | Entity normalization and aliases | Mapping only; does not create safety claims |
+| Curated knowledge | DDInter, PharmGKB/ClinPGx, ChEMBL, licensed DrugBank | DDI/DFI/PK/PGx facts | Candidate/core facts after source-specific mapping and review policy |
+| Signal discovery | FAERS/openFDA events, OnSIDES/TwoSIDES, FooDrugs, literature mining | Long-tail signal detection | Candidate signal only; not proof of causality or incidence |
+| Community coverage-gap | PsychonautWiki, similar community data | Missing substance names, routes, duration, dose candidates | Candidate/coverage-gap only; cannot downgrade higher-tier risk |
 
-- `IndexedDB` 存储只读核心库与用户日志。
-- `navigator.storage.persist()` 申请持久存储。
-- PouchDB/CouchDB 只用于事件日志同步，不直接同步 SQLite 文件。
+Important fields in an evidence record include `fact_type`, `subject_ids`, `claim`, `risk_level`, `confidence`, `source_tier`, `source_name`, `source_url`, `evidence_quote`, `extraction_method`, `review_status`, and `use_policy`.
 
-## 7. 后续扩展
+## Safety, privacy, and traceability model
 
-- 增加 DailyMed SPL XML 批量解析器。
-- 增加 RxNorm NDC/RxCUI 归一化缓存。
-- 增加 DDInter CSV 导入器和风险等级映射。
-- 增加 LLM 抽取队列，输出必须包含原文证据和 `review_status=unreviewed`。
-- 增加移动端 Room Entity 和 migration 验证。
-- 增加数据集签名，防止未审核库被手机端加载。
+- **Unknown is not Safe.** `Unknown` means insufficient evidence. Only `NoKnownClinicalSignificance` means no known clinical significance, and even that should normally be quiet rather than displayed as a positive safety guarantee.
+- **Conservative fusion.** For the same pair/claim, preserve the highest known risk. Lower-tier signal or community data must not reduce a regulatory, guideline, curated, or human-reviewed risk.
+- **Community and pharmacovigilance signals are candidates.** FAERS/openFDA event counts, PsychonautWiki, FooDrugs, OnSIDES/TwoSIDES, and LLM extraction output may surface blind spots, but they should be marked `candidate_signal` until reviewed and supported by traceable evidence.
+- **Evidence traceability is mandatory.** User-facing risks need evidence refs/quotes/source URLs where possible. Raw label text (`source_text`) alone is evidence material, not automatically an actionable rule.
+- **Historical interpretation is snapshot-based.** Journal entries should keep the relevant profile/substance parameter snapshot. Updating the seed database must not silently rewrite the meaning of past logs.
+- **Remote fallback privacy.** The PWA should prefer local/static data. A configured remote static API is for seed/search/bundle lookup, not user journal upload. Remote lookups may reveal searched substance names or IDs to the remote host; therefore remote endpoints should be user-configurable and empty/offline/local-first modes must remain valid. Do not send personal profile, journal entries, dose history, or locally inferred risks to the static remote API.
+- **QR transfer privacy.** QR/text migration payloads contain private profile and journal data. They are local export/import payloads for explicit copy/scan workflows and must not be uploaded to the remote static API.
+- **Live signal consent.** The live openFDA FAERS fallback can send substance names/aliases to openFDA when static signal data is absent. Keep this path user-visible/consent-based, and label the result as low-confidence pharmacovigilance signal rather than confirmed causality or incidence.
+
+## Mobile PWA architecture
+
+Current implementation uses dedicated pages, repositories, services, domain helpers, legacy `lib` utilities, and `App.tsx` as the top-level shell. Keep new work within these boundaries without large opportunistic rewrites.
+
+| Layer | Current location | Target responsibility |
+| --- | --- | --- |
+| `app` | `src/main.tsx`, `src/App.tsx` | App bootstrap, providers, top-level shell, tab orchestration, dependency wiring |
+| `pages` | `src/pages/` | Route/tab-level screens such as Search, Journal, Risks, Curve, Settings |
+| `components` | `src/components/` | Reusable visual building blocks; no direct API/IndexedDB writes except via props/callbacks |
+| `hooks` | `src/hooks/usePlatform.ts` | UI/device state, media queries, haptics, and later page-specific view hooks |
+| `repositories` | `src/repositories/` plus low-level `src/lib/api.ts`/`src/lib/db.ts` | Persistence and data access interfaces: static API, desktop local API, IndexedDB cache/journal/settings |
+| `services` | `src/services/` | Application use cases: sync static DB, hydrate cache, remote fallback, import transfer, risk evaluation |
+| `domain` | `src/domain/`, `src/types.ts`, pure `src/lib/format.ts` pieces | Shared domain types, safety/risk rules, route/stomach/profile vocabulary, invariants |
+| `viewmodels` | `App.tsx` and page-local state/effects | Screen state derivation and commands; bridge pages to services/repositories |
+| `data` | `src/lib/db.ts`, static JSON payloads, IndexedDB stores | Local data schemas, DTOs, cache records, generated static API payload contracts |
+
+Recommended boundaries:
+
+- `domain` and pure risk/PK logic (`lib/risks.ts`, `lib/pk.ts`) should remain testable without React or browser storage.
+- `repositories` should own IO details (`fetch`, IndexedDB object stores, local desktop API paths). UI code should not construct all URLs or IndexedDB transactions directly.
+- `services` should combine repositories into workflows such as “search remote then cache bundle” or “load local seed into cache”.
+- `viewmodels` should prepare localized labels and command handlers for `pages`; reusable `components` should stay presentation-oriented.
+- Remote static API fallback must not receive journal/profile data.
+
+## Desktop server architecture
+
+### Current implementation
+
+The desktop test app remains a no-third-party Python localhost server, but it is no longer a pure monolith. `desktop_app/server.py` owns the HTTP entrypoint, static files, and request dispatch; shared config and service logic live in `desktop_app/config.py` and `desktop_app/services/`:
+
+- **Routes:** `Handler.do_GET` dispatches `/api/seed`, `/api/interactions`, `/api/check`, `/api/adverse-signals`, `/api/sources`, `/api/source-update`, `/api/rebuild`, `/api/public-sync`, `/api/bulk-sync`, `/api/rebuild-status`, `/api/label-bulk-manifest`, `/remote-api/*`, and `/health`.
+- **Services:** `desktop_app/services/source_ops.py` manages public source fetch/sync/rebuild operations; `job_manager.py` owns background job state; server methods still perform seed reads, interaction checks, and response mapping.
+- **Security:** `desktop_app/services/security.py` contains input/path/URL helpers. The server is intended for localhost development, uses stdlib HTTP serving, has no authentication, and should not be exposed on a public network. It reads/writes generated local data and optional caches only.
+- **Models:** persisted seed models live in generated JSON/SQLite from the ETL (`substances_core`, `interactions_core`, evidence rows, dose rules, manifests). Runtime payload shapes mirror mobile `types.ts` and ETL schemas.
+
+### Incremental migration plan
+
+Continue splitting route groups only when changing that area, while preserving the current no-dependency/local-first constraint unless the project intentionally adopts a framework:
+
+```text
+desktop_app/
+  server.py              bootstrap, HTTP server, static files, wiring
+  config.py              path constants, source configs, sys.path setup
+  routes/                future request parsing and response mapping per route group
+  services/              source sync, rebuild jobs, job state, security helpers, future seed/check services
+  models/                request/response DTOs and SQLite row mappers
+```
+
+Migration order should be route-addition friendly: extract a route group only when changing that area, keep behavior covered by smoke tests, and avoid broad rewrites that conflict with feature agents.
+
+## ETL/package architecture
+
+- `schemas.py` defines portable evidence and seed data shapes.
+- `adapters/` converts individual sources (DDInter, DailyMed, openFDA, RxNav, ChEMBL, PsychonautWiki, label bulk data) into facts or mapping records.
+- `fusion.py` applies conservative evidence/risk merge rules and produces core seed structures.
+- `export.py` writes local JSON/SQLite outputs under `build/`.
+- `static_api.py` shards and exports the static JSON API under `public/api/`.
+- `cli.py` is the command entrypoint; `pyproject.toml` also exposes `metabolic-etl` when installed editable.
+
+## Development commands
+
+Run Python commands from repo root. On Windows PowerShell use `$env:PYTHONPATH="src"`; on POSIX shells use `PYTHONPATH=src` before the command.
+
+### Data build and ETL
+
+```powershell
+$env:PYTHONPATH="src"
+python -m metabolic_safety_etl.cli demo --out build
+python -m metabolic_safety_etl.cli import-ddinter --input-dir data/raw/ddinter --out build
+python -m metabolic_safety_etl.cli export-static-api --input-dir build --out public/api
+python -m metabolic_safety_etl.cli build-public-api --out build --api-out public/api --max-public-terms 20 --public-limit 1 --psychonautwiki-pages 1
+python -m metabolic_safety_etl.cli sources --out build/source_status.json
+```
+
+If the package is installed editable, `metabolic-etl ...` can be used instead of `python -m metabolic_safety_etl.cli ...`.
+
+### Desktop server
+
+```powershell
+$env:PYTHONPATH="src"
+python -m metabolic_safety_etl.cli demo --out build
+python desktop_app/server.py
+# or
+python -m desktop_app.server
+```
+
+Open `http://127.0.0.1:8765`. Stop a background server with the PID written in `build/desktop_server.pid` if present:
+
+```powershell
+Stop-Process -Id (Get-Content build/desktop_server.pid)
+```
+
+### Mobile PWA
+
+Requires Node >=20.19 for Vite 7.
+
+```powershell
+cd mobile_pwa
+npm install
+npm run dev -- --port 5174
+npm test
+npm run build
+npm run preview
+```
+
+Focused tests can be run with Vitest, for example:
+
+```powershell
+cd mobile_pwa
+npx vitest run src/lib/api.test.ts
+npx vitest run src/domain/safety.test.ts src/services/risk-service.test.ts
+```
+
+### Android wrapper
+
+Build PWA assets before using the Capacitor wrapper:
+
+```powershell
+cd mobile_pwa
+npm run build
+cd ..\android
+# run the appropriate Gradle/Android Studio build task from this directory
+```
+
+`capacitor.config.json` points `webDir` at `mobile_pwa/dist`.
+
+### Tests
+
+```powershell
+$env:PYTHONPATH="src"
+python -m unittest discover -s tests
+python -m unittest tests.test_static_api
+
+cd mobile_pwa
+npm test
+npx vitest run src/lib/risks.test.ts
+```
+
+## Deployment/static API docs
+
+- GitHub Pages static API: `docs/REMOTE_STATIC_API.md`
+- Cloudflare Pages static API: `docs/CLOUDFLARE_PAGES_API.md`
+- Data/source project scheme notes: `docs/PROJECT_SCHEME.md`

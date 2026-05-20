@@ -397,6 +397,9 @@ def load_pharmgkb_bulk_facts(source_dir: Path, max_records: int = 100_000, max_f
 
 
 def load_onsides_bulk_facts(source_dir: Path, max_records: int = 100_000, max_files: int = 0) -> list[EvidenceFact]:
+    joined_facts = load_onsides_joined_facts(source_dir, max_records=max_records, max_files=max_files)
+    if joined_facts:
+        return joined_facts
     facts: list[EvidenceFact] = []
     count = 0
     for name, rows in iter_tabular_source(source_dir, max_files=max_files):
@@ -427,6 +430,65 @@ def load_onsides_bulk_facts(source_dir: Path, max_records: int = 100_000, max_fi
             count += 1
             if max_records and count >= max_records:
                 return dedupe_fact_objects(facts)
+    return dedupe_fact_objects(facts)
+
+
+def load_onsides_joined_facts(source_dir: Path, max_records: int = 100_000, max_files: int = 0) -> list[EvidenceFact]:
+    """Load OnSIDES v3 archives by joining product/effect vocab tables.
+
+    The real OnSIDES release stores adverse events as IDs in
+    ``product_adverse_effect.csv`` and keeps human-readable drug/event names in
+    separate vocabulary tables.  The generic CSV loader cannot infer those
+    joins, so handle the canonical archive layout explicitly first.
+    """
+    facts: list[EvidenceFact] = []
+    count = 0
+    for path in select_files(iter_files(source_dir), max_files):
+        if not zipfile.is_zipfile(path):
+            continue
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+                required = {"csv/product_adverse_effect.csv", "csv/product_label.csv", "csv/vocab_meddra_adverse_effect.csv"}
+                if not required.issubset(names):
+                    continue
+                product_names = {
+                    row.get("label_id", ""): row.get("source_product_name", "")
+                    for row in read_zip_csv_rows(archive, "csv/product_label.csv")
+                    if row.get("label_id") and row.get("source_product_name")
+                }
+                event_names = {
+                    row.get("meddra_id", ""): row.get("meddra_name", "")
+                    for row in read_zip_csv_rows(archive, "csv/vocab_meddra_adverse_effect.csv")
+                    if row.get("meddra_id") and row.get("meddra_name")
+                }
+                for row in read_zip_csv_rows(archive, "csv/product_adverse_effect.csv"):
+                    drug = product_names.get(row.get("product_label_id", ""), "")
+                    event = event_names.get(row.get("effect_meddra_id", ""), "")
+                    if not drug or not event:
+                        continue
+                    subject_id = slugify(drug)
+                    facts.append(identity_fact(subject_id, drug, "Adverse event signal", "OnSIDES bulk", "Signal", "https://github.com/tatonetti-lab/onsides", "bulk_csv_joined"))
+                    facts.append(EvidenceFact(
+                        fact_id=f"onsides_adverse_{stable_hash(subject_id + event + str(row))}",
+                        fact_type="adverse_event",
+                        subject_ids=[subject_id],
+                        claim={"event": event, "meddra_id": row.get("effect_meddra_id"), "label_section": row.get("label_section"), "raw": compact_row(row, 12)},
+                        confidence="Low",
+                        source_tier="Signal",
+                        source_name="OnSIDES bulk",
+                        source_url="https://github.com/tatonetti-lab/onsides",
+                        evidence_quote=event[:600],
+                        extraction_method="bulk_csv_joined",
+                        review_status="unreviewed",
+                        use_policy="candidate_signal",
+                        updated_at=now_utc(),
+                    ))
+                    count += 1
+                    if max_records and count >= max_records:
+                        return dedupe_fact_objects(facts)
+        except Exception:
+            continue
     return dedupe_fact_objects(facts)
 
 
@@ -464,7 +526,46 @@ def load_foodrugs_bulk_facts(source_dir: Path, max_records: int = 100_000, max_f
             count += 1
             if max_records and count >= max_records:
                 return dedupe_fact_objects(facts)
+    if not facts:
+        for row in iter_foodrugs_sql_interactions(source_dir, max_files=max_files):
+            drug = row.get("drug", "")
+            food = row.get("food", "")
+            if not drug or not food:
+                continue
+            drug_id = slugify(drug)
+            food_id = slugify(food)
+            facts.append(identity_fact(drug_id, drug, "Drug", "FooDrugs bulk", "Signal", "https://zenodo.org/records/8192515", "bulk_mysql_dump"))
+            facts.append(identity_fact(food_id, food, "Food/Bioactive", "FooDrugs bulk", "Signal", "https://zenodo.org/records/8192515", "bulk_mysql_dump"))
+            facts.append(EvidenceFact(
+                fact_id=f"foodrugs_pair_{stable_hash(drug + food + str(row))}",
+                fact_type="food_interaction",
+                subject_ids=[drug_id, food_id],
+                claim={"mechanism": None, "note": f"FooDrugs text-mined candidate food-drug signal: {drug} / {food}", "text_id": row.get("texts_ID")},
+                risk_level="Unknown",
+                confidence="Low",
+                source_tier="Signal",
+                source_name="FooDrugs bulk",
+                source_url="https://zenodo.org/records/8192515",
+                evidence_quote=f"{food} / {drug}",
+                extraction_method="bulk_mysql_dump",
+                review_status="unreviewed",
+                use_policy="candidate_signal",
+                updated_at=now_utc(),
+            ))
+            count += 1
+            if max_records and count >= max_records:
+                return dedupe_fact_objects(facts)
     return dedupe_fact_objects(facts)
+
+
+CHEMBL_PK_STANDARD_TYPES = (
+    "T1/2",
+    "t1/2",
+    "Plasma half life",
+    "Plasma half-life",
+    "Terminal elimination t1/2",
+    "Half duration",
+)
 
 
 def load_chembl_bulk_facts(source_dir: Path, max_records: int = 100_000) -> list[EvidenceFact]:
@@ -477,6 +578,61 @@ def load_chembl_bulk_facts(source_dir: Path, max_records: int = 100_000) -> list
         try:
             with sqlite3.connect(db_path) as conn:
                 conn.row_factory = sqlite3.Row
+                # Extract PK half-life values before broad mechanism/identity rows so
+                # debug-capped CI runs still exercise half-life/static API updates.
+                try:
+                    placeholders = ",".join("?" for _ in CHEMBL_PK_STANDARD_TYPES)
+                    pk_rows = conn.execute(f"""
+                        SELECT a.standard_type, a.standard_value, a.standard_units, a.standard_relation,
+                               a.upper_value, a.standard_upper_value,
+                               md.pref_name, md.chembl_id, ass.assay_type
+                        FROM activities a
+                        JOIN assays ass ON ass.assay_id = a.assay_id
+                        JOIN compound_records cr ON cr.record_id = a.record_id
+                        JOIN molecule_dictionary md ON md.molregno = cr.molregno
+                        WHERE a.standard_type IN ({placeholders})
+                          AND a.standard_value IS NOT NULL
+                          AND md.pref_name IS NOT NULL
+                        ORDER BY md.pref_name, a.standard_type
+                    """, CHEMBL_PK_STANDARD_TYPES)
+                    for pk in pk_rows:
+                        name = pk["pref_name"]
+                        subject_id = slugify(name)
+                        half_life_hours = _chembl_pk_to_hours(pk["standard_value"], pk["standard_units"])
+                        if half_life_hours is None or half_life_hours <= 0:
+                            continue
+                        upper_hours = _chembl_pk_to_hours(pk["upper_value"] or pk["standard_upper_value"], pk["standard_units"])
+                        relation = pk["standard_relation"] or "="
+                        claim: dict[str, Any] = {
+                            "half_life_hours": round(half_life_hours, 3),
+                            "standard_type": pk["standard_type"],
+                            "standard_relation": relation,
+                            "standard_value": pk["standard_value"],
+                            "standard_units": pk["standard_units"],
+                        }
+                        if upper_hours and upper_hours > half_life_hours:
+                            claim["half_life_hours_upper"] = round(upper_hours, 3)
+                            claim["half_life_hours_mean"] = round((half_life_hours + upper_hours) / 2, 3)
+                        facts.append(EvidenceFact(
+                            fact_id=f"chembl_bulk_pk_{stable_hash(str(pk['chembl_id']) + str(half_life_hours) + str(pk['standard_type']))}",
+                            fact_type="pharmacokinetics",
+                            subject_ids=[subject_id],
+                            claim=claim,
+                            confidence="High",
+                            source_tier="CuratedDB",
+                            source_name="ChEMBL activities",
+                            source_url=f"https://www.ebi.ac.uk/chembl/compound_report_card/{pk['chembl_id']}/",
+                            evidence_quote=f"ChEMBL {pk['standard_type']}={pk['standard_value']} {pk['standard_units']} for {name}",
+                            extraction_method="bulk_sqlite_activities",
+                            review_status="machine_checked",
+                            use_policy="evidence_source",
+                            updated_at=now_utc(),
+                        ))
+                        count += 1
+                        if max_records and count >= max_records:
+                            return dedupe_fact_objects(facts)
+                except sqlite3.Error:
+                    pass
                 try:
                     mechanism_rows = conn.execute("""
                         SELECT md.chembl_id, md.pref_name, dm.mechanism_of_action, dm.action_type, td.pref_name target_name
@@ -617,6 +773,84 @@ def read_delimited_rows(handle: Iterable[str], name: str) -> Iterator[dict[str, 
             yield {str(key or "").strip(): str(value or "").strip() for key, value in row.items()}
 
 
+def read_zip_csv_rows(archive: zipfile.ZipFile, member: str) -> Iterator[dict[str, str]]:
+    with archive.open(member) as handle:
+        yield from read_delimited_rows(io.TextIOWrapper(handle, encoding="utf-8-sig", errors="replace"), member)
+
+
+def iter_foodrugs_sql_interactions(source_dir: Path, max_files: int = 0) -> Iterator[dict[str, str]]:
+    for path in select_files(iter_files(source_dir), max_files):
+        if not path.name.lower().endswith(".sql"):
+            continue
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.startswith("INSERT INTO `TM_interactions`"):
+                    continue
+                columns = mysql_insert_columns(line)
+                if not columns:
+                    columns = ["TM_interactions_ID", "texts_ID", "start_index", "end_index", "food", "drug"]
+                values_blob = line.split(" VALUES ", 1)[-1].rstrip(";\n")
+                for values in iter_mysql_insert_tuples(values_blob):
+                    if len(values) != len(columns):
+                        continue
+                    row = {columns[index]: values[index] for index in range(len(columns))}
+                    yield row
+
+
+def mysql_insert_columns(line: str) -> list[str]:
+    match = re.match(r"INSERT INTO `[^`]+` \((.*?)\) VALUES ", line)
+    if not match:
+        return []
+    return re.findall(r"`([^`]+)`", match.group(1))
+
+
+def iter_mysql_insert_tuples(values_blob: str) -> Iterator[list[str]]:
+    current: list[str] = []
+    field = ""
+    in_string = False
+    escape = False
+    in_tuple = False
+    for char in values_blob:
+        if not in_tuple:
+            if char == "(":
+                in_tuple = True
+                current = []
+                field = ""
+            continue
+        if in_string:
+            if escape:
+                field += mysql_unescape(char)
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == "'":
+                in_string = False
+            else:
+                field += char
+            continue
+        if char == "'":
+            in_string = True
+        elif char == ",":
+            current.append(mysql_value(field))
+            field = ""
+        elif char == ")":
+            current.append(mysql_value(field))
+            yield current
+            in_tuple = False
+            field = ""
+        else:
+            field += char
+
+
+def mysql_value(value: str) -> str:
+    clean = value.strip()
+    return "" if clean.upper() == "NULL" else clean
+
+
+def mysql_unescape(char: str) -> str:
+    return {"n": "\n", "r": "\r", "t": "\t", "0": "\0"}.get(char, char)
+
+
 def identity_fact(subject_id: str, name: str, category: str, source_name: str, tier: str, source_url: str, method: str) -> EvidenceFact:
     return EvidenceFact(
         fact_id=f"{slugify(source_name)}_identity_{stable_hash(subject_id + name)}",
@@ -648,6 +882,26 @@ def extract_half_life_hours(text: str) -> float | None:
     if unit.startswith("day") or unit == "d":
         return round(value * 24, 3)
     return round(value, 3)
+
+
+def _chembl_pk_to_hours(value: object, units: object) -> float | None:
+    """Convert a ChEMBL activity value+units to hours.  Returns None on failure."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    unit_str = str(units or "").strip().lower()
+    if unit_str in ("h", "hr", "hrs", "hour", "hours"):
+        return round(numeric, 3)
+    if unit_str in ("min", "mins", "minute", "minutes"):
+        return round(numeric / 60, 3)
+    if unit_str in ("d", "day", "days"):
+        return round(numeric * 24, 3)
+    if unit_str in ("s", "sec", "secs", "second", "seconds"):
+        return round(numeric / 3600, 3)
+    return round(numeric, 3)  # assume hours if unit unknown
 
 
 def extract_cyp_relations(text: str) -> list[tuple[str, str, str]]:

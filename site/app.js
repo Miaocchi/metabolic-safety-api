@@ -134,6 +134,47 @@ function formatHours(value) {
   return String(value);
 }
 
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== "";
+}
+
+function firstValue(...values) {
+  return values.find(hasValue);
+}
+
+function firstPkValue(rows, keys) {
+  for (const row of rows || []) {
+    for (const key of keys) {
+      if (hasValue(row?.[key])) return row[key];
+    }
+  }
+  return undefined;
+}
+
+function formatMinutes(value) {
+  if (!hasValue(value)) return ui.unknown;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  if (numeric >= 60) return `${(numeric / 60).toFixed(1)} h`;
+  return `${numeric.toFixed(0)} min`;
+}
+
+function mergePharmacokinetics(detail, overlayRows) {
+  const rows = [];
+  const seen = new Set();
+  const add = (row) => {
+    if (!row || typeof row !== "object") return;
+    const key = row.fact_id || [row.source_name, row.source_tier, row.half_life_hours, row.onset_minutes, row.duration_minutes, row.standard_type].join("|");
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(row);
+  };
+  (Array.isArray(detail?.pharmacokinetics) ? detail.pharmacokinetics : []).forEach(add);
+  (Array.isArray(detail?.pharmacokinetics_detail) ? detail.pharmacokinetics_detail : []).forEach(add);
+  (overlayRows || []).forEach(add);
+  return rows;
+}
+
 function html(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;",
@@ -396,7 +437,7 @@ async function selectItem(item) {
       safeFetch(detailPaths.pharmacokinetics, { expectedCount: detail.pharmacokinetic_count || 0 }),
       safeFetch(detailPaths.enzyme_relations, { expectedCount: detail.enzyme_relation_count || 0 }),
     ]);
-    renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, pharmacokinetics, enzymeRelations);
+    renderDetail(detail, interactions, doseRules, doseCandidates, overdoseWarnings, drugEffects, mergePharmacokinetics(detail, pharmacokinetics), enzymeRelations);
     const params = new URLSearchParams(window.location.search);
     params.set("id", item.id);
     if (state.query) params.set("q", state.query);
@@ -417,6 +458,9 @@ function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseW
   const sourceRows = Array.isArray(detail.source_summary) ? detail.source_summary.slice(0, 10) : [];
   const cyp = Array.isArray(detail.cyp_tags) && detail.cyp_tags.length ? detail.cyp_tags.join(" / ") : ui.unknown;
   const aliases = aliasesOf(detail).length ? aliasesOf(detail).join(" / ") : ui.unknown;
+  const baseHalfLife = firstValue(detail.base_half_life, firstPkValue(pharmacokinetics, ["half_life_hours_mean", "half_life_hours"]));
+  const baseOnset = firstValue(detail.base_onset, firstPkValue(pharmacokinetics, ["onset_minutes"]));
+  const baseDuration = firstValue(detail.base_duration, firstPkValue(pharmacokinetics, ["duration_minutes"]));
   $("detail").className = "detail-card";
   $("detail").innerHTML = `
     <div class="detail-title">
@@ -426,8 +470,8 @@ function renderDetail(detail, interactions, doseRules, doseCandidates, overdoseW
     <div class="kv-grid">
       <div><span>${ui.category}</span><strong>${html(formatValue(detail.category, ui.unknown))}</strong></div>
       <div><span>${ui.solubility}</span><strong>${html(formatValue(detail.solubility))}</strong></div>
-      <div><span>${ui.halfLife}</span><strong>${html(formatHours(detail.base_half_life))}</strong></div>
-      <div><span>${ui.onsetDuration}</span><strong>${html(`${formatValue(detail.base_onset, "?")} min / ${formatValue(detail.base_duration, "?")} min`)}</strong></div>
+      <div><span>${ui.halfLife}</span><strong>${html(formatHours(baseHalfLife))}</strong></div>
+      <div><span>${ui.onsetDuration}</span><strong>${html(`${formatMinutes(baseOnset)} / ${formatMinutes(baseDuration)}`)}</strong></div>
     </div>
     <section class="subsection">
       <h4>${ui.identity}</h4>
@@ -509,13 +553,19 @@ function renderPharmacokinetics(rows) {
   return rows.slice(0, 40).map((row) => {
     const values = [
       row.half_life_hours !== null && row.half_life_hours !== undefined ? `\u534a\u8870\u671f\uff1a${html(formatHours(row.half_life_hours))}` : "",
+      hasValue(row.half_life_hours_upper) ? `\u4e0a\u9650\uff1a${html(formatHours(row.half_life_hours_upper))}` : "",
+      hasValue(row.half_life_hours_mean) ? `\u5747\u503c\uff1a${html(formatHours(row.half_life_hours_mean))}` : "",
+      hasValue(row.onset_minutes) ? `\u8d77\u6548\uff1a${html(formatMinutes(row.onset_minutes))}` : "",
+      hasValue(row.duration_minutes) ? `\u6301\u7eed\uff1a${html(formatMinutes(row.duration_minutes))}` : "",
+      row.route ? `\u9014\u5f84\uff1a${html(row.route)}` : "",
+      row.standard_type ? `\u7c7b\u578b\uff1a${html(row.standard_type)}` : "",
       row.clearance ? `\u6e05\u9664\u7387\uff1a${html(row.clearance)}` : "",
       row.volume_distribution ? `Vd\uff1a${html(row.volume_distribution)}` : "",
       row.bioavailability ? `F\uff1a${html(row.bioavailability)}` : "",
     ].filter(Boolean).join(" \u00b7 ");
     return `
       <article class="pk-card">
-        <div class="card-head"><strong>${html(row.section || "PK")}</strong><span class="badge">${html(row.confidence || "Unknown")}</span></div>
+        <div class="card-head"><strong>${html(row.standard_type || row.section || "PK")}</strong><span class="badge">${html(row.confidence || "Unknown")}</span></div>
         <div class="card-meta">${html(row.source_name || "Unknown source")} \u00b7 ${html(row.source_tier || "Unknown")}${sourceLink(row)}</div>
         ${values ? `<div class="card-meta">${values}</div>` : ""}
         ${row.text ? `<div class="card-meta">${html(row.text)}</div>` : ""}

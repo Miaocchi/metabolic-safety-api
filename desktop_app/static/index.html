@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>代谢与安全管理桌面测试端</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260518-risk-panel-scroll">
 </head>
 <body>
   <header class="topbar app-header">
@@ -154,14 +154,14 @@
           </label>
         </div>
         <label>
-          静态 API 地址（默认本机 /remote-api，可填 GitHub / Cloudflare Pages）
-          <input id="remoteApiBase" type="text" placeholder="/remote-api">
+          静态 API 地址（默认 GitHub Pages 新版 /api；也可填本机 /remote-api）
+          <input id="remoteApiBase" type="text" placeholder="https://miaocchi.github.io/metabolic-safety-api">
         </label>
         <div class="remote-source-actions">
           <button id="remoteApiSave" class="ghost" type="button">保存远程源</button>
           <button id="remoteApiTest" class="ghost" type="button">测试连接</button>
         </div>
-        <div id="remoteApiStatus" class="remote-api-status">远程回退默认关闭；默认使用本机 /remote-api，开启后只在本地检索无命中时请求 JSON。</div>
+        <div id="remoteApiStatus" class="remote-api-status">远程回退默认关闭；默认使用 GitHub Pages 新版 /api，开启后只在本地检索无命中时请求 JSON。</div>
       </div>
       <div class="fixed-profile-title">固定个体代谢参数</div>
       <details class="profile-details settings-profile" open>
@@ -213,6 +213,15 @@
         <button id="labelBulkManifest" class="ghost" type="button">全量标签清单</button>
         <button id="bulkSyncAll" class="ghost" type="button">全量拉所有仓库</button>
       </div>
+      <div class="qr-transfer-panel">
+        <div class="fixed-profile-title">二维码导入/导出</div>
+        <div class="qr-transfer-actions">
+          <button id="qrExportTransfer" class="ghost" type="button">生成二维码/文本</button>
+          <button id="qrImportTransfer" class="ghost" type="button">导入文本</button>
+        </div>
+        <div id="qrTransferPreview" class="qr-transfer-preview empty">点击生成后显示二维码；包含摄入日志和个人参数。</div>
+        <textarea id="qrTransferText" rows="4" placeholder="生成 MSAFE1 文本，或粘贴移动端扫码得到的 MSAFE1 文本后导入"></textarea>
+      </div>
       <div id="rebuildProgress" class="progress-panel hidden advanced-ui">
         <div class="progress-track"><div id="rebuildProgressBar" class="progress-bar"></div></div>
         <div id="rebuildProgressText" class="progress-text">等待重建。</div>
@@ -240,9 +249,12 @@
       <div id="legend" class="legend"></div>
     </section>
     <section class="panel pmi-panel advanced-ui">
-      <div class="panel-title">
+      <div class="panel-title pmi-panel-title">
         <h2>PMI 个体代谢指数</h2>
-        <span id="pmiScoreMeta">等待模型计算</span>
+        <div class="pmi-title-actions">
+          <span id="pmiScoreMeta">等待模型计算</span>
+          <button id="pmiHelpButton" class="help-button" type="button" aria-controls="pmiHelpDialog" aria-expanded="false" title="查看 PMI 和单位说明">?</button>
+        </div>
       </div>
       <div id="pmiSummary" class="pmi-summary empty">暂无活跃摄入，保存日志后生成 PMI。</div>
     </section>
@@ -271,12 +283,36 @@
         <span id="riskCount">0 条</span>
       </div>
       <div id="combinedEffectSummary" class="combined-effect empty">暂无活跃药物。</div>
+      <div id="peakForecastWarning" class="peak-forecast-host hidden"></div>
       <div id="sideEffectWarning" class="side-effect-warning empty">暂无副作用或过量警告。</div>
       <div id="riskList" class="risk-list empty">暂无活跃冲突。Unknown 表示资料不足，不代表安全。</div>
     </section>
     </div>
   </main>
-
-  <script src="/app.js?v=20260518-risk-subject"></script>
+  <div id="pmiHelpDialog" class="help-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="pmiHelpTitle">
+    <div class="help-card">
+      <header>
+        <div>
+          <h2 id="pmiHelpTitle">PMI 和单位说明</h2>
+          <p>这些数值用于本地模型排序和预警，不等同于临床诊断或真实化验结果。</p>
+        </div>
+        <button id="pmiHelpClose" class="ghost help-close" type="button">关闭</button>
+      </header>
+      <div class="help-grid">
+        <div><strong>PMI</strong><span>0-100 的本地负荷指数；当前公式为 10 + 冲突/过量 + 当前暴露 + 未来暴露 + 个体脆弱性 + 用药复杂度，并限制在 0-100。</span></div>
+        <div><strong>冲突/过量</strong><span>来自相互作用、剂量阈值和不良信号；同类风险会去重，后续风险按递减权重叠加，严重风险才明显拉高。</span></div>
+        <div><strong>当前暴露</strong><span>按物质聚合当前模型浓度，综合总当前暴露、最强单药当前暴露和预测峰值；多条同药不会逐条硬加。</span></div>
+        <div><strong>未来暴露</strong><span>由未来 24 小时向后暴露指数压缩而来，最多只占一部分分数，避免把展示指数直接等同于 PMI。</span></div>
+        <div><strong>个体脆弱性</strong><span>由睡眠不足、体温升高和修正半衰期相对基础半衰期的延长决定，反映同样剂量下的个人状态压力。</span></div>
+        <div><strong>用药复杂度</strong><span>按归一化后的活跃物质种数和重复摄入数小幅加分，上限较低；同药不同 ID 会尽量按名称合并，不再让四五次同药普通记录直接变高负荷。</span></div>
+        <div><strong>向后暴露指数</strong><span>从当前时间向未来 24 小时扫描；综合 AUC24、峰值、多久达峰和半衰期残留，用于解释趋势。</span></div>
+        <div><strong>AUC24 / peak / Cmax</strong><span>AUC24 是未来 24 小时累计暴露面积；peak 是未来窗口峰值；Cmax 是本次摄入曲线峰值。</span></div>
+        <div><strong>mg/L、ug/L</strong><span>模型换算后的相对浓度单位；没有血检校准时只用于同一应用内比较。</span></div>
+        <div><strong>t1/2 / ka / ke</strong><span>t1/2 是个体修正半衰期；ka 是吸收速率，ke 是消除速率，单位 h⁻¹。</span></div>
+        <div><strong>×N</strong><span>同一种物质当前仍活跃的日志条数；用于阅读趋势，不等于风险条数。</span></div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js?v=20260518-risk-panel-scroll"></script>
 </body>
 </html>

@@ -7,8 +7,17 @@
 - 本地证据事实模型：每条事实都带来源层级、可信度、安全等级、证据文本、抽取方式和审核状态。
 - 融合规则：社区数据和低可信度数据不能把更高风险来源降级；`Unknown` 不等于安全。
 - 导出物：`init_substances.json`、`init_interactions.json`、`evidence_facts.json`、`app_seed.sqlite`。
+- 半衰期等 PK 字段会随 ETL/静态 API 导出进入移动端可同步数据；GitHub Actions 构建 Pages API 时同样生成这些静态产物，构建失败应阻止部署，避免发布陈旧或不完整数据。
 - 可选在线适配器：openFDA label 文本抓取、PsychonautWiki GraphQL 候选数据抓取。
 - 离线测试：不依赖第三方包，不需要数据库服务。
+
+## 文档入口
+
+- 架构、目录分层、移动端/桌面端边界和开发命令：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- 移动端快速启动：[`mobile_pwa/README.md`](mobile_pwa/README.md)
+- GitHub Pages 静态 API：[`docs/REMOTE_STATIC_API.md`](docs/REMOTE_STATIC_API.md)
+- Cloudflare Pages 静态 API：[`docs/CLOUDFLARE_PAGES_API.md`](docs/CLOUDFLARE_PAGES_API.md)
+- 数据源项目方案：[`docs/PROJECT_SCHEME.md`](docs/PROJECT_SCHEME.md)
 
 ## 快速运行
 
@@ -27,6 +36,8 @@ build/evidence_facts.json
 build/manifest.json
 build/app_seed.sqlite
 ```
+
+开发机可选原始数据参考目录为 Windows `D:\metabolic-safety-data`（WSL: `/mnt/d/metabolic-safety-data`）。该目录只用于本地大包/原始数据留存，不是运行移动端 PWA 的必要条件。
 
 ## 拉取监管标签原文作为证据源
 
@@ -47,17 +58,37 @@ python -m metabolic_safety_etl.cli fetch-psychonautwiki --limit 10 --out data/ps
 
 PsychonautWiki 输出被标记为 `source_tier=Community` 和 `use_policy=candidate_signal`，只能补盲，不能覆盖监管标签、指南或已审核策展库。
 
-## 移动端接入边界
+## 移动端 PWA
 
-移动端首版只读取 `init_substances.json` 和 `init_interactions.json` 作为只读核心库；`evidence_facts.json` 用于详情页溯源和调试。历史日志必须保存当时的参数快照，不能只引用当前核心库，否则上游库更新会改变历史解释。
+`mobile_pwa/` 是 React 19 + Vite 7 + TypeScript 客户端，要求 Node >= 20.19。npm 命令在 `mobile_pwa` 下运行：
+
+```powershell
+cd mobile_pwa
+npm install
+npm run dev -- --port 5174
+npm test
+npm run build
+```
+
+常用聚焦测试：
+
+```powershell
+cd mobile_pwa
+npx vitest run src/lib/api.test.ts
+npx vitest run src/domain/safety.test.ts src/services/risk-service.test.ts
+```
+
+移动端使用 `/api` 静态 JSON、IndexedDB 缓存和本地 journal/settings/profile store。未配置远程 Pages URL 时，内置 `/api` 是默认 authoritative bootstrap/sync source；配置后可同步 GitHub Pages 或 Cloudflare Pages 静态 API。PMI/安全摘要即使没有活跃物质也保持可见，用于展示个人状态和空状态提示。历史日志必须保存当时的参数快照，不能只引用当前核心库，否则上游库更新会改变历史解释。
 
 ## 安全边界
 
 这是本地数据工程原型，不是医疗器械级 CDSS。任何进入用户提醒的规则都需要来源复核、版本签名、回归测试和明确的免责声明。`NoKnownClinicalSignificance` 表示未发现明确临床意义相互作用；`Unknown` 表示资料不足，不能显示为安全。
 
+隐私边界：远程 GitHub/Cloudflare 静态 API 只用于搜索索引、详情 bundle、半衰期/PK 静态字段和离线包，不接收个人参数、日志、剂量史或本地推断风险。二维码/文本迁移 payload 包含个人参数和摄入日志，只在用户复制、扫码或导入时本地传递，不会上传到远程静态 API。实时 openFDA FAERS fallback 只在静态信号缺失时可选触发，会把物质名/别名发到 openFDA；应保持用户可感知/可关闭，并只作为低可信候选信号。
+
 ## 桌面测试端
 
-已经提供一个无第三方依赖的本地桌面 Web 测试端，用于在电脑上验证移动端之前的数据和交互逻辑。
+已经提供一个无第三方依赖的本地桌面 Web 测试端，用于在电脑上验证数据和交互逻辑。`desktop_app/server.py` 保留 stdlib HTTP 入口，公共源同步、重建任务和安全/path 校验已拆到 `desktop_app/services/` 与 `desktop_app/config.py`。
 
 启动：
 
@@ -65,6 +96,8 @@ PsychonautWiki 输出被标记为 `source_tier=Community` 和 `use_policy=candid
 $env:PYTHONPATH="src"
 python -m metabolic_safety_etl.cli demo --out build
 python desktop_app/server.py
+# 或
+python -m desktop_app.server
 ```
 
 打开：

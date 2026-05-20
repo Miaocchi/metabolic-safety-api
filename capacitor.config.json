@@ -1,0 +1,8 @@
+{
+  "appId": "com.metabolicsafety.app",
+  "appName": "代谢安全",
+  "webDir": "mobile_pwa/dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

@@ -1,0 +1,141 @@
+/* =====================================================
+   Design Tokens — Apple HIG inspired, multi-platform
+   ===================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable", "Segoe UI", "Helvetica Neue", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SF Mono", SFMono-Regular, "Cascadia Code", "Fira Code", monospace;
+
+  /* Core palette (iOS system colors) */
+  --blue: #007aff;
+  --green: #34c759;
+  --orange: #ff9500;
+  --red: #ff3b30;
+  --purple: #af52de;
+  --teal: #5ac8fa;
+  --yellow: #ffcc00;
+  --indigo: #5856d6;
+  --pink: #ff2d55;
+  --gray: #8e8e93;
+
+  /* Semantic colors — light mode */
+  --bg: #f2f2f7;
+  --bg-secondary: #e5e5ea;
+  --bg-elevated: rgba(255, 255, 255, 0.86);
+  --card: rgba(255, 255, 255, 0.92);
+  --card-solid: #ffffff;
+  --text: #000000;
+  --text-secondary: #3c3c43;
+  --muted: #8e8e93;
+  --separator: rgba(60, 60, 67, 0.15);
+  --separator-strong: rgba(60, 60, 67, 0.29);
+  --overlay: rgba(0, 0, 0, 0.32);
+  --fill: rgba(120, 120, 128, 0.12);
+  --fill-secondary: rgba(120, 120, 128, 0.24);
+
+  /* Legacy aliases for backwards compat */
+  --line: var(--separator);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.08);
+  --shadow-soft: 0 12px 32px rgba(31, 35, 45, 0.10);
+  --shadow-card: 0 20px 52px rgba(31, 35, 45, 0.14);
+  --hairline: inset 0 0 0 1px rgba(60, 60, 67, 0.10);
+  --hairline-strong: inset 0 0 0 1px rgba(60, 60, 67, 0.18);
+  --glass: rgba(255, 255, 255, 0.46);
+  --glass-strong: rgba(255, 255, 255, 0.62);
+  --glass-tint: linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.18) 48%, rgba(255, 255, 255, 0.36));
+  --liquid-edge: inset 0 1px 0 rgba(255, 255, 255, 0.72), inset 0 -1px 0 rgba(255, 255, 255, 0.18), inset 1px 0 0 rgba(255, 255, 255, 0.22), inset -1px 0 0 rgba(255, 255, 255, 0.12);
+  --liquid-glow: 0 10px 26px rgba(0, 122, 255, 0.06), 0 4px 16px rgba(175, 82, 222, 0.05);
+  --neon-blue: 0 0 0 1px rgba(0, 122, 255, 0.12), 0 0 14px 2px rgba(0, 122, 255, 0.20), 0 0 26px 4px rgba(90, 200, 250, 0.10);
+  --neon-orange: 0 0 0 1px rgba(255, 149, 0, 0.12), 0 0 14px 2px rgba(255, 149, 0, 0.20), 0 0 26px 4px rgba(255, 204, 0, 0.10);
+  --neon-red: 0 0 0 1px rgba(255, 59, 48, 0.13), 0 0 14px 2px rgba(255, 59, 48, 0.22), 0 0 28px 4px rgba(255, 45, 85, 0.11);
+
+  /* Safe area */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /* Spacing scale (8pt grid, Apple style) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Radius scale */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  /* Motion */
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 0.15s;
+  --duration-normal: 0.28s;
+  --duration-slow: 0.4s;
+
+  /* Z-index scale */
+  --z-tabbar: 20;
+  --z-sheet: 40;
+  --z-toast: 50;
+  --z-modal: 60;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --bg-secondary: #1c1c1e;
+    --bg-elevated: rgba(28, 28, 30, 0.86);
+    --card: rgba(28, 28, 30, 0.92);
+    --card-solid: #1c1c1e;
+    --text: #ffffff;
+    --text-secondary: rgba(235, 235, 245, 0.6);
+    --muted: #8e8e93;
+    --separator: rgba(84, 84, 88, 0.4);
+    --separator-strong: rgba(84, 84, 88, 0.65);
+    --overlay: rgba(0, 0, 0, 0.6);
+    --fill: rgba(120, 120, 128, 0.24);
+    --fill-secondary: rgba(120, 120, 128, 0.36);
+    --shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+    --shadow-soft: 0 14px 34px rgba(0, 0, 0, 0.34);
+    --shadow-card: 0 22px 58px rgba(0, 0, 0, 0.48);
+    --hairline: inset 0 0 0 1px rgba(235, 235, 245, 0.08);
+    --hairline-strong: inset 0 0 0 1px rgba(235, 235, 245, 0.14);
+    --glass: rgba(28, 28, 30, 0.46);
+    --glass-strong: rgba(36, 36, 40, 0.62);
+    --glass-tint: linear-gradient(135deg, rgba(255, 255, 255, 0.20), rgba(255, 255, 255, 0.05) 48%, rgba(90, 200, 250, 0.10));
+    --liquid-edge: inset 0 1px 0 rgba(255, 255, 255, 0.20), inset 0 -1px 0 rgba(255, 255, 255, 0.05), inset 1px 0 0 rgba(255, 255, 255, 0.10), inset -1px 0 0 rgba(255, 255, 255, 0.05);
+    --liquid-glow: 0 12px 30px rgba(0, 122, 255, 0.10), 0 5px 18px rgba(175, 82, 222, 0.08);
+    --neon-blue: 0 0 0 1px rgba(90, 200, 250, 0.16), 0 0 16px 2px rgba(0, 122, 255, 0.28), 0 0 30px 4px rgba(90, 200, 250, 0.16);
+    --neon-orange: 0 0 0 1px rgba(255, 204, 0, 0.16), 0 0 16px 2px rgba(255, 149, 0, 0.28), 0 0 30px 4px rgba(255, 204, 0, 0.14);
+    --neon-red: 0 0 0 1px rgba(255, 45, 85, 0.18), 0 0 16px 2px rgba(255, 59, 48, 0.30), 0 0 32px 4px rgba(255, 45, 85, 0.16);
+  }
+}
+
+/* iOS PWA standalone overrides */
+@supports (-webkit-touch-callout: none) {
+  :root {
+    --safe-top: max(env(safe-area-inset-top), 44px);
+    --safe-bottom: max(env(safe-area-inset-bottom), 34px);
+  }
+}
+
+/* macOS specific */
+@media (prefers-color-scheme: dark) and (pointer: fine) {
+  :root {
+    --bg: #1e1e1e;
+    --bg-secondary: #2c2c2e;
+    --card-solid: #2c2c2e;
+  }
+}

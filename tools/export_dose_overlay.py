@@ -261,6 +261,12 @@ def compact_pharmacokinetics_fact(fact: EvidenceFact) -> dict[str, Any]:
         "confidence": fact.confidence,
         "section": claim.get("section"),
         "half_life_hours": claim.get("half_life_hours"),
+        "half_life_hours_upper": claim.get("half_life_hours_upper"),
+        "half_life_hours_mean": claim.get("half_life_hours_mean"),
+        "onset_minutes": claim.get("onset_minutes"),
+        "duration_minutes": claim.get("duration_minutes"),
+        "route": claim.get("route"),
+        "standard_type": claim.get("standard_type"),
         "clearance": claim.get("clearance"),
         "volume_distribution": claim.get("volume_distribution"),
         "bioavailability": claim.get("bioavailability"),
@@ -292,7 +298,7 @@ def compact_content_fact(fact: EvidenceFact) -> dict[str, Any] | None:
             return row
     if fact.fact_type == "pharmacokinetics":
         row = compact_pharmacokinetics_fact(fact)
-        if any(row.get(key) not in (None, "") for key in ("half_life_hours", "clearance", "volume_distribution", "bioavailability", "text")):
+        if any(row.get(key) not in (None, "") for key in ("half_life_hours", "half_life_hours_upper", "half_life_hours_mean", "onset_minutes", "duration_minutes", "clearance", "volume_distribution", "bioavailability", "text")):
             return row
     if fact.fact_type == "enzyme_relation":
         row = compact_enzyme_relation_fact(fact)
