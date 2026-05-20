@@ -215,7 +215,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m metabolic_safety_etl.cli build-public-api             --ddinter-dir data/raw/ddinter             --out build             --api-out public/api             --skip-raw-sources             --max-public-terms 120             --public-limit 2             --public-workers 8             --psychonautwiki-pages 3             --extra-facts data/optional             --extra-facts data/overrides             --extra-facts .cache/metabolic-source-facts/openfda_label/evidence_facts.json             --extra-facts .cache/metabolic-source-facts/dailymed/evidence_facts.json             --extra-facts .cache/metabolic-source-facts/chembl/evidence_facts.json             --extra-facts .cache/metabolic-source-facts/foodrugs/evidence_facts.json             --extra-facts .cache/metabolic-source-facts/onsides/evidence_facts.json             --extra-facts .cache/metabolic-source-facts/pharmgkb/evidence_facts.json
+          # Keep the fused seed build bounded: large label/signal source layers are streamed
+          # into overlay shards in the next step instead of being loaded into memory here.
+          python -m metabolic_safety_etl.cli build-public-api \
+            --ddinter-dir data/raw/ddinter \
+            --out build \
+            --api-out public/api \
+            --skip-raw-sources \
+            --max-public-terms 120 \
+            --public-limit 2 \
+            --public-workers 8 \
+            --psychonautwiki-pages 3 \
+            --extra-facts data/optional \
+            --extra-facts data/overrides \
+            --extra-facts .cache/metabolic-source-facts/chembl/evidence_facts.json \
+            --extra-facts .cache/metabolic-source-facts/pharmgkb/evidence_facts.json
 
       - name: Stream source overlays into static API
         shell: bash
