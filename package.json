@@ -15,7 +15,8 @@
     "data:demo": "npm run data:cli -- demo --out build",
     "data:test": "node tools/npm_python_runner.js test",
     "data:export-static-api": "npm run data:cli -- export-static-api --input-dir build --out public/api",
-    "data:sources": "npm run data:cli -- sources --out build/source_status.json"
+    "data:sources": "npm run data:cli -- sources --out build/source_status.json",
+    "repo:check-generated": "node tools/check_generated_outputs.js"
   },
   "dependencies": {
     "@capacitor/android": "^5.7.8",

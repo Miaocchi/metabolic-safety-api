@@ -102,6 +102,61 @@ class StaticApiExportTests(unittest.TestCase):
             signal = json.loads((root / "public" / "api" / "adverse_signals" / "donepezil.json").read_text(encoding="utf-8"))
             self.assertEqual(signal["risk_level"], "Minor")
 
+    def test_public_contract_excludes_local_runtime_fields(self):
+        private_fields = {
+            "profile",
+            "journal",
+            "dose_history",
+            "qr_transfer",
+            "local_risk",
+            "local_risks",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build = root / "build"
+            build.mkdir()
+            (build / "manifest.json").write_text(json.dumps({"dataset_version": "contract-test"}), encoding="utf-8")
+            (build / "init_substances.json").write_text(json.dumps([
+                {
+                    "id": "caffeine",
+                    "name_en": "Caffeine",
+                    "name_zh": "咖啡因",
+                    "category": "Stimulant",
+                    "identifiers": {"aliases": "Coffee"},
+                    "cyp_tags": ["CYP1A2"],
+                    "profile": {"weight_kg": 70},
+                    "journal": [{"note": "private"}],
+                    "dose_history": [{"mg": 100}],
+                    "qr_transfer": "private-payload",
+                    "local_risk": "private-score",
+                    "local_risks": ["private-risk"],
+                }
+            ], ensure_ascii=False), encoding="utf-8")
+            (build / "init_interactions.json").write_text("[]", encoding="utf-8")
+            (build / "init_dose_rules.json").write_text("[]", encoding="utf-8")
+            (build / "evidence_facts.json").write_text("[]", encoding="utf-8")
+
+            manifest = export_static_api(build, root / "api")
+
+            self.assertEqual(manifest["dataset_version"], "contract-test")
+            self.assertEqual(manifest["counts"], {"substances": 1, "interactions": 0, "dose_rules": 0})
+            self.assertEqual(manifest["paths"]["search_index"], "search/index.json")
+            self.assertEqual(manifest["paths"]["search_manifest"], "search/manifest.json")
+            self.assertIn("full_package", manifest)
+            self.assertIn("source_library", manifest)
+
+            search = json.loads((root / "api" / "search" / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(search), 1)
+            self.assertEqual(set(search[0]["paths"]), {"substance", "interactions", "dose_rules"})
+            for path in search[0]["paths"].values():
+                self.assertFalse(path.startswith("/"))
+                self.assertTrue(path.endswith(".json"))
+
+            detail = json.loads((root / "api" / search[0]["paths"]["substance"]).read_text(encoding="utf-8"))
+            self.assertTrue(private_fields.isdisjoint(detail))
+            self.assertEqual(detail["remote_source"], "static-drug-api-v1")
+            self.assertEqual(detail["paths"], search[0]["paths"])
+
 
 class StaticApiHalfLifeTests(unittest.TestCase):
     """Test half-life and pharmacokinetics detail in static API output."""
