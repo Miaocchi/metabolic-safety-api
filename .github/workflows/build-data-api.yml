@@ -281,6 +281,22 @@ jobs:
             --fact-json .cache/metabolic-source-facts/onsides/evidence_facts.json \
             --fact-json .cache/metabolic-source-facts/pharmgkb/evidence_facts.json
 
+      - name: Export zh-CN i18n overlays into static API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/i18n_seed_memory.py \
+            --jsonl data/i18n/zh-CN/translation_memory.jsonl \
+            --memory build/i18n/translation_memory.sqlite \
+            --locale zh-CN
+          python tools/i18n_export_overlays.py \
+            --api-dir public/api \
+            --memory build/i18n/translation_memory.sqlite \
+            --locale zh-CN \
+            --domains interactions,dose-rules,drug-effects \
+            --out-dir public/api/i18n/zh-CN \
+            --zh-aliases data/overrides/drug_zh_aliases.csv
+
       - name: Copy search web UI
         shell: bash
         run: cp -R site/. public/
